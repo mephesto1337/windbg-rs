@@ -9,7 +9,7 @@ pub struct LoadDll {
 impl From<LOAD_DLL_DEBUG_INFO> for LoadDll {
     fn from(value: LOAD_DLL_DEBUG_INFO) -> Self {
         Self {
-            filename: crate::utils::get_filename_from_handle(value.hFile).ok(),
+            filename: crate::utils::filenames::get_filename_from_handle(value.hFile).ok(),
             base_addr: value.lpBaseOfDll as usize,
         }
     }

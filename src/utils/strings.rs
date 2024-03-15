@@ -1,6 +1,6 @@
 use std::{borrow::Cow, mem::size_of};
 
-use super::read_memory;
+use super::memory;
 use windows::{
     core::{Error, Result},
     Win32::Foundation::{ERROR_NOT_FOUND, HANDLE},
@@ -27,9 +27,11 @@ macro_rules! impl_read_null_terminated_buffer {
                         uninit_buf.len() * size_of::<$type>(),
                     )
                 };
-                let n = read_memory(handle, addr, buf)?;
-                bytes_read += n;
-                addr += n;
+                let n = memory::read(handle, addr, buf)?;
+                let old_len = null_terminated_buf.len();
+                unsafe {
+                    null_terminated_buf.set_len(old_len + n);
+                }
                 if let Some(index) = null_terminated_buf
                     .iter()
                     .enumerate()
@@ -40,6 +42,8 @@ macro_rules! impl_read_null_terminated_buffer {
                     null_terminated_buf.truncate(index);
                     return Ok(null_terminated_buf);
                 }
+                bytes_read += n;
+                addr += n;
             }
         }
     };

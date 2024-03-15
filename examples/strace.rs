@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand};
 use windows::core::Result;
 
-use debugger::{debuggee::LoadDll, debugger::ContinueEvent, Debuggee, Debugger};
+use debugger::{
+    debuggee::{Exception, ExceptionCode, ExceptionInfo, LoadDll},
+    debugger::ContinueEvent,
+    Debuggee, Debugger,
+};
 
 #[derive(Debug, Parser)]
 pub struct Args {
@@ -23,16 +27,11 @@ pub enum Command {
 
 const CREATEFILEW_OFFSET: usize = 0x000250F0;
 
+#[derive(Debug)]
 struct Strace;
 
 impl Debugger for Strace {
-    fn on_dll_load(
-        &mut self,
-        debuggee: &mut Debuggee,
-        _pid: u32,
-        _tid: u32,
-        load: LoadDll,
-    ) -> Result<ContinueEvent> {
+    fn on_dll_load(&mut self, debuggee: &mut Debuggee, load: LoadDll) -> Result<ContinueEvent> {
         let Some(filename) = load.filename.as_ref() else {
             return Ok(ContinueEvent::default());
         };
@@ -45,32 +44,44 @@ impl Debugger for Strace {
         Ok(ContinueEvent::default())
     }
 
-    fn on_breakpoint(
-        &mut self,
-        debuggee: &mut Debuggee,
-        _pid: u32,
-        _tid: u32,
-        addr: usize,
-    ) -> Result<ContinueEvent> {
-        log::info!("Hit BP CreateFileW at {addr:x}");
+    fn on_breakpoint(&mut self, debuggee: &mut Debuggee, addr: usize) -> Result<ContinueEvent> {
+        tracing::info!("Hit BP CreateFileW at {addr:x}");
         let filename_addr = debuggee.get_registers()?.cx;
         if let Ok(filename) = debuggee.read_string(filename_addr, true) {
-            log::info!("Opening filename {filename:?}");
-        } else {
-            log::info!("Opening filename unknown file");
+            println!("Opening filename {filename:?}");
         }
         Ok(ContinueEvent::default())
+    }
+
+    fn on_exception(&mut self, debuggee: &mut Debuggee, e: ExceptionInfo) -> Result<ContinueEvent> {
+        if !e.first_chance {
+            return Ok(ContinueEvent::StopDebugging);
+        }
+
+        let Some(Exception {
+            code: ExceptionCode::AccessViolation,
+            address,
+            ..
+        }) = e.chain.first()
+        else {
+            return Ok(ContinueEvent::StopDebugging);
+        };
+
+        let mut buf = [0u8; 16];
+        let n = debuggee.read_memory(*address - 3, &mut buf[..])?;
+        tracing::error!("0x{address:x}: {buf:x?}", buf = &buf[..n]);
+        Ok(ContinueEvent::Continue)
     }
 }
 
 fn main() -> Result<()> {
-    env_logger::init();
+    tracing_subscriber::fmt::init();
     let args = Args::parse();
     let mut debuggee = match args.cmd {
         Command::Attach { pid } => Debuggee::attach_pid(pid)?,
         Command::Spawn { exec, args } => Debuggee::spawn(exec, args.unwrap_or_default())?,
     };
-    log::info!("Debuggee = {debuggee:?}");
+    tracing::info!("Debuggee = {debuggee:?}");
     let mut debugger = Strace;
 
     debuggee.run(&mut debugger)?;

@@ -1,6 +1,6 @@
 use windows::Win32::System::Diagnostics::Debug::CREATE_PROCESS_DEBUG_INFO;
 
-use crate::{process::get_image_name, utils::get_filename_from_handle};
+use crate::{process::get_image_name, utils::filenames::get_filename_from_handle};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateProcessInfo {

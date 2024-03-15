@@ -25,114 +25,66 @@ impl ContinueEvent {
     }
 }
 
-pub trait Debugger {
-    fn on_exception(
-        &mut self,
-        debuggee: &mut Debuggee,
-        pid: u32,
-        tid: u32,
-        e: ExceptionInfo,
-    ) -> Result<ContinueEvent> {
-        let _ = (debuggee, pid, tid, e);
-        Ok(ContinueEvent::default())
+pub trait Debugger: std::fmt::Debug {
+    fn on_exception(&mut self, debuggee: &mut Debuggee, e: ExceptionInfo) -> Result<ContinueEvent> {
+        let _ = (debuggee, e);
+        Ok(ContinueEvent::StopDebugging)
     }
 
     fn on_thread_create(
         &mut self,
         debuggee: &mut Debuggee,
-        pid: u32,
-        tid: u32,
         info: CreateThreadInfo,
     ) -> Result<ContinueEvent> {
-        let _ = (debuggee, pid, tid, info);
+        let _ = (debuggee, info);
         Ok(ContinueEvent::default())
     }
 
     fn on_process_create(
         &mut self,
         debuggee: &mut Debuggee,
-        pid: u32,
-        tid: u32,
         info: CreateProcessInfo,
     ) -> Result<ContinueEvent> {
-        let _ = (debuggee, pid, tid, info);
+        let _ = (debuggee, info);
         Ok(ContinueEvent::default())
     }
 
-    fn on_thread_exit(
-        &mut self,
-        debuggee: &mut Debuggee,
-        pid: u32,
-        tid: u32,
-        code: u32,
-    ) -> Result<ContinueEvent> {
-        let _ = (debuggee, pid, tid, code);
+    fn on_thread_exit(&mut self, debuggee: &mut Debuggee, code: u32) -> Result<ContinueEvent> {
+        let _ = (debuggee, code);
         Ok(ContinueEvent::default())
     }
 
-    fn on_process_exit(
-        &mut self,
-        debuggee: &mut Debuggee,
-        pid: u32,
-        tid: u32,
-        code: u32,
-    ) -> Result<ContinueEvent> {
-        let _ = (debuggee, pid, tid, code);
+    fn on_process_exit(&mut self, debuggee: &mut Debuggee, code: u32) -> Result<ContinueEvent> {
+        let _ = (debuggee, code);
         Ok(ContinueEvent::default())
     }
 
-    fn on_dll_load(
-        &mut self,
-        debuggee: &mut Debuggee,
-        pid: u32,
-        tid: u32,
-        load: LoadDll,
-    ) -> Result<ContinueEvent> {
-        let _ = (debuggee, pid, tid, load);
+    fn on_dll_load(&mut self, debuggee: &mut Debuggee, load: LoadDll) -> Result<ContinueEvent> {
+        let _ = (debuggee, load);
         Ok(ContinueEvent::default())
     }
 
     fn on_dll_unload(
         &mut self,
         debuggee: &mut Debuggee,
-        pid: u32,
-        tid: u32,
         base_addr: usize,
     ) -> Result<ContinueEvent> {
-        let _ = (debuggee, pid, tid, base_addr);
+        let _ = (debuggee, base_addr);
         Ok(ContinueEvent::default())
     }
 
-    fn on_debug_string(
-        &mut self,
-        debuggee: &mut Debuggee,
-        pid: u32,
-        tid: u32,
-        s: String,
-    ) -> Result<ContinueEvent> {
-        let _ = (debuggee, pid, tid, s);
+    fn on_debug_string(&mut self, debuggee: &mut Debuggee, s: String) -> Result<ContinueEvent> {
+        let _ = (debuggee, s);
         Ok(ContinueEvent::default())
     }
 
-    fn on_rip(
-        &mut self,
-        debuggee: &mut Debuggee,
-        pid: u32,
-        tid: u32,
-        rip: Rip,
-    ) -> Result<ContinueEvent> {
-        let _ = (debuggee, pid, tid, rip);
+    fn on_rip(&mut self, debuggee: &mut Debuggee, rip: Rip) -> Result<ContinueEvent> {
+        let _ = (debuggee, rip);
         Ok(ContinueEvent::default())
     }
 
-    fn on_breakpoint(
-        &mut self,
-        debuggee: &mut Debuggee,
-        pid: u32,
-        tid: u32,
-        addr: usize,
-    ) -> Result<ContinueEvent> {
-        let _ = (debuggee, pid, tid, addr);
+    fn on_breakpoint(&mut self, debuggee: &mut Debuggee, addr: usize) -> Result<ContinueEvent> {
+        let _ = (debuggee, addr);
         Ok(ContinueEvent::default())
     }
 }

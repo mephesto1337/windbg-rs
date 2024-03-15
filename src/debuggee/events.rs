@@ -1,4 +1,4 @@
-use crate::utils::{read_string_utf16, read_string_utf8};
+use crate::utils::strings::{read_string_utf16, read_string_utf8};
 use windows::{
     core::{Error, Result},
     Win32::{
