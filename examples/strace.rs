@@ -81,6 +81,7 @@ impl Debugger for Strace {
         if let Some((filename, k)) = maybe_filename {
             println!("Opening filename{k} {filename:?}");
         }
+        debuggee.step_over()?;
         Ok(ContinueEvent::default())
     }
 

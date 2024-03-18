@@ -8,6 +8,10 @@ use std::{
     time::Duration,
 };
 
+use capstone::{
+    arch::{x86::ArchSyntax, BuildsCapstone, BuildsCapstoneSyntax},
+    Capstone,
+};
 use windows::{
     core::{Error, Result, PCSTR, PSTR},
     Win32::{
@@ -15,9 +19,9 @@ use windows::{
         System::{
             Diagnostics::{
                 Debug::{
-                    self, ContinueDebugEvent, DebugActiveProcess, DebugActiveProcessStop,
+                    ContinueDebugEvent, DebugActiveProcess, DebugActiveProcessStop,
                     DebugBreakProcess, FlushInstructionCache, GetThreadContext, SetThreadContext,
-                    WaitForDebugEvent, CONTEXT, CONTEXT_FLAGS, DEBUG_EVENT,
+                    WaitForDebugEvent, CONTEXT, DEBUG_EVENT,
                 },
                 ToolHelp::{
                     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD,
@@ -48,9 +52,21 @@ const BREAKPOINT_SIZE: usize = 1;
 const BREAK_OPCODES: [u8; BREAKPOINT_SIZE] = [0xcc];
 
 #[cfg(target_arch = "x86_64")]
-const CONTEXT_ALL: CONTEXT_FLAGS = Debug::CONTEXT_ALL_AMD64;
+mod constants {
+    use capstone::arch::x86::ArchMode;
+    use windows::Win32::System::Diagnostics::Debug::{CONTEXT_ALL_AMD64, CONTEXT_FLAGS};
+    pub(super) const CONTEXT_ALL: CONTEXT_FLAGS = CONTEXT_ALL_AMD64;
+    pub(super) const CAPSTONE_MODE: ArchMode = ArchMode::Mode64;
+}
 #[cfg(target_arch = "x86")]
-const CONTEXT_ALL: u32 = Debug::CONTEXT_ALL_X86;
+mod constants {
+    use capstone::arch::x86::ArchMode;
+    use windows::Win32::System::Diagnostics::Debug::{CONTEXT_ALL_X86, CONTEXT_FLAGS};
+    pub(super) const CONTEXT_ALL: CONTEXT_FLAGS = CONTEXT_ALL_X86;
+    pub(super) const CAPSTONE_MODE: ArchMode = ArchMode::Mode32;
+}
+
+use self::constants::*;
 const TRAP_FLAG: u32 = 1 << 8;
 
 pub struct Debuggee {
@@ -62,6 +78,7 @@ pub struct Debuggee {
     prev_breakpoint_addr: usize,
     breakpoint_action: Option<ContinueEvent>,
     modules: Vec<Image>,
+    cs: Capstone,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -122,6 +139,13 @@ impl Debuggee {
         current_tid: u32,
     ) -> Result<Self> {
         let main_module = Image::from_file(proc.image())?;
+        let cs = Capstone::new()
+            .x86()
+            .mode(CAPSTONE_MODE)
+            .syntax(ArchSyntax::Intel)
+            .detail(true)
+            .build()
+            .expect("Invalid builtin paramaters for Capstone");
         Ok(Self {
             proc,
             h_proc: handle,
@@ -130,6 +154,7 @@ impl Debuggee {
             breakpoints: Default::default(),
             modules: vec![main_module],
             breakpoint_action: None,
+            cs,
             prev_breakpoint_addr: 0,
             _not_send: PhantomData,
         })
@@ -374,7 +399,7 @@ impl Debuggee {
                     self.prev_breakpoint_addr = 0;
                     Ok(ContinueEvent::default())
                 } else {
-                    tracing::trace!("Single step from 0x{address:x}");
+                    tracing::debug!("Single step from 0x{address:x}");
                     Ok(ContinueEvent::default())
                 }
             }
@@ -626,17 +651,43 @@ impl Debuggee {
     }
 
     #[tracing::instrument(skip(self), level = "debug", ret)]
-    pub fn single_step(&mut self) -> Result<()> {
+    pub fn single_step(&mut self) -> Result<usize> {
         let mut context = self.get_current_context()?;
-        if tracing::enabled!(tracing::Level::DEBUG) {
+        let ip = context.Rip as usize;
+        if tracing::enabled!(tracing::Level::TRACE) {
             let mut nxt_instructions = [0u8; 8];
-            let ip = context.Rip as usize;
             let prot = crate::utils::memory::get_protection(self.h_proc.0, ip)?;
             self.read_memory(ip, &mut nxt_instructions[..])?;
-            tracing::debug!("Single step at 0x{ip:x}: {nxt_instructions:x?} ({prot:?})");
+            tracing::trace!("Single step at 0x{ip:x}: {nxt_instructions:x?} ({prot:?})");
         }
         context.EFlags |= TRAP_FLAG;
         self.set_current_context(&context)?;
+        Ok(ip)
+    }
+
+    fn is_call_instruction(&self, bc: &[u8], addr: usize) -> bool {
+        let Ok(insts) = self.cs.disasm_count(bc, addr as u64, 1) else {
+            return false;
+        };
+        let Some(first) = insts.first() else {
+            return false;
+        };
+        tracing::debug!("{first}");
+        first.mnemonic() == Some("call")
+    }
+
+    #[tracing::instrument(skip(self), level = "debug", ret)]
+    pub fn step_over(&mut self) -> Result<()> {
+        let mut ip = self.single_step()?;
+        let mut instructions = [0u8; 8];
+        for _ in 0..10 {
+            self.read_memory(ip, &mut instructions[..])?;
+            if self.is_call_instruction(&instructions[..], ip) {
+                break;
+            }
+            self.continue_debug_event(self.pid(), self.tid(), ContinueEvent::Continue)?;
+            ip = self.single_step()?;
+        }
         Ok(())
     }
 
