@@ -310,6 +310,7 @@ impl Debuggee {
         D: Debugger,
     {
         tracing::debug!("BP: {:x?}", &self.breakpoints[..]);
+        let symbol = self.lookup_addr(addr);
         if let Some(opcodes) = self
             .breakpoints
             .iter()
@@ -317,7 +318,7 @@ impl Debuggee {
             .find_map(|(a, opcodes)| (*a == addr).then_some(opcodes))
             .copied()
         {
-            tracing::info!("Got expected breakpoint at {addr:x?}");
+            tracing::info!("Got expected breakpoint at {symbol}");
             let mut orig = [0; BREAKPOINT_SIZE];
             self.restore_opcodes(addr, &opcodes[..], Some(&mut orig[..]))?;
             let mut regs = self.get_registers()?;
@@ -334,7 +335,7 @@ impl Debuggee {
             // self.restore_opcodes(addr, &orig[..], None)?;
             Ok(ContinueEvent::Continue)
         } else {
-            tracing::warn!("Got unexpected breakpoint at {addr:x?}");
+            tracing::warn!("Got unexpected breakpoint at {symbol}");
             Ok(ContinueEvent::default())
         }
     }
