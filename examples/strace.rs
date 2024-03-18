@@ -29,8 +29,6 @@ pub enum Command {
 
 #[derive(Default)]
 struct Strace {
-    createfilea: usize,
-    createfilew: usize,
     exception_counter: usize,
 }
 
@@ -51,27 +49,28 @@ impl Debugger for Strace {
             return Ok(ContinueEvent::default());
         }
 
-        self.createfilea = debuggee
+        let createfilea = debuggee
             .resolv("CreateFileA")
             .expect("CreateFileA should be present in kernelbase");
-        self.createfilew = debuggee
+        let createfilew = debuggee
             .resolv("CreateFileW")
             .expect("CreateFileA should be present in kernelbase");
 
-        debuggee.add_breakpoint(self.createfilea)?;
-        debuggee.add_breakpoint(self.createfilew)?;
+        debuggee.add_breakpoint(createfilea)?;
+        debuggee.add_breakpoint(createfilew)?;
 
         Ok(ContinueEvent::default())
     }
 
     fn on_breakpoint(&mut self, debuggee: &mut Debuggee, addr: usize) -> Result<ContinueEvent> {
         let filename_addr = debuggee.get_registers()?.cx;
-        let maybe_filename = if addr == self.createfilea {
+        let symbol = debuggee.lookup_addr(addr);
+        let maybe_filename = if symbol.eq_ignore_ascii_case("createfilea") {
             debuggee
                 .read_string(filename_addr, false)
                 .ok()
                 .map(|x| (x, 'A'))
-        } else if addr == self.createfilew {
+        } else if symbol.eq_ignore_ascii_case("createfilew") {
             debuggee
                 .read_string(filename_addr, true)
                 .ok()
