@@ -57,7 +57,7 @@ pub struct Debuggee {
     h_proc: OwnedHandle,
     tids: Vec<(u32, OwnedHandle)>,
     current_tid: u32,
-    breakpoints: Vec<(usize, [u8; BREAKPOINT_SIZE])>,
+    breakpoints: Vec<Option<(usize, [u8; BREAKPOINT_SIZE])>>,
     prev_breakpoint_addr: usize,
     breakpoint_action: Option<ContinueEvent>,
     _not_send: PhantomData<*mut ()>,
@@ -233,17 +233,9 @@ impl Debuggee {
         Ok(())
     }
 
-    pub fn read_memory(&mut self, addr: usize, buf: &mut [u8]) -> Result<usize> {
-        mem::read(self.h_proc.0, addr, buf)
-    }
-
-    pub fn write_memory(&mut self, addr: usize, buf: &[u8]) -> Result<usize> {
-        mem::write(self.h_proc.0, addr, buf)
-    }
-
-    pub fn write_all_memory(&mut self, mut addr: usize, mut buf: &[u8]) -> Result<()> {
+    pub fn write_memory(&mut self, mut addr: usize, mut buf: &[u8]) -> Result<()> {
         while !buf.is_empty() {
-            let n = self.write_memory(addr, buf)?;
+            let n = mem::write(self.h_proc.0, addr, buf)?;
             addr += n;
             buf = &buf[n..];
         }
@@ -260,9 +252,9 @@ impl Debuggee {
         }
     }
 
-    pub fn read_memory_exact(&mut self, mut addr: usize, mut buf: &mut [u8]) -> Result<()> {
+    pub fn read_memory(&mut self, mut addr: usize, mut buf: &mut [u8]) -> Result<()> {
         while !buf.is_empty() {
-            let n = self.read_memory(addr, buf)?;
+            let n = mem::read(self.h_proc.0, addr, buf)?;
             addr += n;
             buf = &mut buf[n..];
         }
@@ -312,41 +304,26 @@ impl Debuggee {
         if let Some(opcodes) = self
             .breakpoints
             .iter()
+            .filter_map(|x| x.as_ref())
             .find_map(|(a, opcodes)| (*a == addr).then_some(opcodes))
             .copied()
         {
-            if !first {
-                let mut bc = [0u8; 8];
-                self.read_memory(addr, &mut bc[..])?;
-                tracing::debug!("bytecode {bc:x?}");
-                match self.breakpoint_action.take() {
-                    Some(a) => {
-                        tracing::debug!("return: {a:?}");
-                        Ok(a)
-                    }
-                    None => {
-                        tracing::error!("No action associated with BP at 0x{addr:x}");
-                        Ok(ContinueEvent::Continue)
-                    }
-                }
-            } else {
-                tracing::info!("Got expected breakpoint at {addr:x?}");
-                let mut orig = [0; BREAKPOINT_SIZE];
-                self.restore_opcodes(addr, &opcodes[..], Some(&mut orig[..]))?;
-                let mut regs = self.get_registers()?;
-                tracing::debug!(
-                    "Setting back IP from {ip:x} to {addr:x} (-{n})",
-                    ip = regs.ip,
-                    n = regs.ip - addr
-                );
-                regs.ip = addr;
-                self.set_registers(regs)?;
-                let action = dbg.on_breakpoint(self, addr)?;
-                self.breakpoint_action = Some(action);
-                self.single_step()?;
-                // self.restore_opcodes(addr, &orig[..], None)?;
-                Ok(ContinueEvent::Continue)
-            }
+            tracing::info!("Got expected breakpoint at {addr:x?}");
+            let mut orig = [0; BREAKPOINT_SIZE];
+            self.restore_opcodes(addr, &opcodes[..], Some(&mut orig[..]))?;
+            let mut regs = self.get_registers()?;
+            tracing::debug!(
+                "Setting back IP from {ip:x} to {addr:x} (-{n})",
+                ip = regs.ip,
+                n = regs.ip - addr
+            );
+            regs.ip = addr;
+            self.set_registers(regs)?;
+            let action = dbg.on_breakpoint(self, addr)?;
+            self.breakpoint_action = Some(action);
+            self.single_step()?;
+            // self.restore_opcodes(addr, &orig[..], None)?;
+            Ok(ContinueEvent::Continue)
         } else {
             tracing::warn!("Got unexpected breakpoint at {addr:x?}");
             Ok(ContinueEvent::default())
@@ -363,7 +340,7 @@ impl Debuggee {
                 code: ExceptionCode::Breakpoint,
                 address,
                 ..
-            }) => {
+            }) if e.first_chance => {
                 self.prev_breakpoint_addr = *address;
                 self.handle_breakpoint(dbg, *address, e.first_chance)
             }
@@ -374,8 +351,7 @@ impl Debuggee {
             }) => {
                 if self.breakpoint_action.is_some() {
                     tracing::debug!("got SingleStep exception at 0x{address:x}");
-                    const SINGLE_STEP_MAX_SIZE: usize = 10;
-                    if address - self.prev_breakpoint_addr > SINGLE_STEP_MAX_SIZE {
+                    if self.prev_breakpoint_addr == 0 {
                         tracing::warn!(
                             address,
                             prev_breakpoint_addr = self.prev_breakpoint_addr,
@@ -384,12 +360,12 @@ impl Debuggee {
                         );
                         return Ok(ContinueEvent::default());
                     }
-                    self.write_all_memory(self.prev_breakpoint_addr, &BREAK_OPCODES[..])?;
+                    self.write_memory(self.prev_breakpoint_addr, &BREAK_OPCODES[..])?;
                     self.prev_breakpoint_addr = 0;
                     Ok(ContinueEvent::default())
                 } else {
-                    tracing::info!("Got exception: {e:x?}");
-                    dbg.on_exception(self, e)
+                    tracing::trace!("Single step from 0x{address:x}");
+                    Ok(ContinueEvent::default())
                 }
             }
             _ => {
@@ -399,76 +375,82 @@ impl Debuggee {
         }
     }
 
-    #[tracing::instrument(skip(self), fields(pid = self.pid()))]
+    #[tracing::instrument(name = "run", skip(self), fields(pid = self.pid()))]
+    pub fn run_inner<D>(&mut self, dbg: &mut D) -> Result<ContinueEvent>
+    where
+        D: Debugger,
+    {
+        let raw_event = self.wait_for_event(None)?;
+        let (pid, tid) = (raw_event.dwProcessId, raw_event.dwThreadId);
+        debug_assert!(pid == self.pid());
+        self.current_tid = tid;
+        let event = DebugEvent::new(self.h_proc.0, raw_event)?;
+        let action = match event {
+            DebugEvent::Exception(e) => self.handle_exception(dbg, e)?,
+            DebugEvent::CreateThread((handle, info)) => {
+                let tid = unsafe { GetThreadId(handle) };
+                tracing::info!("New thread #{tid:x} with func {:x}", info.start_address);
+                self.tids.push((tid, OwnedHandle(handle)));
+                dbg.on_thread_create(self, info)?
+            }
+            DebugEvent::CreateProcess(info) => {
+                if let Some(image_name) = info.image_name.as_ref() {
+                    tracing::info!("New process {image_name}");
+                } else {
+                    tracing::info!("New process with unknown image");
+                }
+                dbg.on_process_create(self, info)?
+            }
+            DebugEvent::ExitThread(code) => {
+                tracing::info!("Thread exiting with code 0x{code:x}");
+                self.check_handles(tid);
+                dbg.on_thread_exit(self, code)?
+            }
+            DebugEvent::ExitProcess(code) => {
+                tracing::info!("Process exitting with code 0x{code:x}");
+                dbg.on_process_exit(self, code)?;
+                ContinueEvent::StopDebugging
+            }
+            DebugEvent::LoadDll(load_dll) => {
+                if let Some(filename) = load_dll.filename.as_ref() {
+                    tracing::info!("Loading DLL {filename} at 0x{:x}", load_dll.base_addr);
+                } else {
+                    tracing::info!("Loading DLL at 0x{:x}", load_dll.base_addr);
+                }
+                dbg.on_dll_load(self, load_dll)?
+            }
+            DebugEvent::UnloadDll(base_addr) => {
+                tracing::info!("Unloadind dll at 0x{base_addr:x}");
+                dbg.on_dll_unload(self, base_addr)?
+            }
+            DebugEvent::DebugString(s) => {
+                if !s.is_empty() {
+                    tracing::info!("Got string from debuggee: {s:?}");
+                    dbg.on_debug_string(self, s)?
+                } else {
+                    tracing::trace!("Got empty string from debuggee");
+                    ContinueEvent::default()
+                }
+            }
+            DebugEvent::Rip(rip) => {
+                tracing::info!("Got rip: {rip:?}");
+                dbg.on_rip(self, rip)?
+            }
+        };
+        Ok(action)
+    }
+
     pub fn run<D>(&mut self, dbg: &mut D) -> Result<()>
     where
         D: Debugger,
     {
-        loop {
-            let raw_event = self.wait_for_event(None)?;
-            let (pid, tid) = (raw_event.dwProcessId, raw_event.dwThreadId);
-            debug_assert!(pid == self.pid());
-            self.current_tid = tid;
-            let event = DebugEvent::new(self.h_proc.0, raw_event)?;
-            let action = match event {
-                DebugEvent::Exception(e) => self.handle_exception(dbg, e)?,
-                DebugEvent::CreateThread((handle, info)) => {
-                    let tid = unsafe { GetThreadId(handle) };
-                    tracing::info!("New thread #{tid:x} with func {:x}", info.start_address);
-                    self.tids.push((tid, OwnedHandle(handle)));
-                    dbg.on_thread_create(self, info)?
-                }
-                DebugEvent::CreateProcess(info) => {
-                    if let Some(image_name) = info.image_name.as_ref() {
-                        tracing::info!("New process {image_name}");
-                    } else {
-                        tracing::info!("New process with unknown image");
-                    }
-                    dbg.on_process_create(self, info)?
-                }
-                DebugEvent::ExitThread(code) => {
-                    tracing::info!("Thread exiting with code 0x{code:x}");
-                    self.check_handles(tid);
-                    dbg.on_thread_exit(self, code)?
-                }
-                DebugEvent::ExitProcess(code) => {
-                    tracing::info!("Process exitting with code 0x{code:x}");
-                    dbg.on_process_exit(self, code)?;
-                    break;
-                }
-                DebugEvent::LoadDll(load_dll) => {
-                    if let Some(filename) = load_dll.filename.as_ref() {
-                        tracing::info!("Loading DLL {filename} at 0x{:x}", load_dll.base_addr);
-                    } else {
-                        tracing::info!("Loading DLL at 0x{:x}", load_dll.base_addr);
-                    }
-                    dbg.on_dll_load(self, load_dll)?
-                }
-                DebugEvent::UnloadDll(base_addr) => {
-                    tracing::info!("Unloadind dll at 0x{base_addr:x}");
-                    dbg.on_dll_unload(self, base_addr)?
-                }
-                DebugEvent::DebugString(s) => {
-                    if !s.is_empty() {
-                        tracing::info!("Got string from debuggee: {s:?}");
-                        dbg.on_debug_string(self, s)?
-                    } else {
-                        tracing::trace!("Got empty string from debuggee");
-                        ContinueEvent::default()
-                    }
-                }
-                DebugEvent::Rip(rip) => {
-                    tracing::info!("Got rip: {rip:?}");
-                    dbg.on_rip(self, rip)?
-                }
-            };
-
+        while let Ok(action) = self.run_inner(dbg) {
             if matches!(action, ContinueEvent::StopDebugging) {
                 tracing::info!("Stopping debugger loop");
                 break;
             }
 
-            self.continue_debug_event(pid, tid, action)?;
+            self.continue_debug_event(self.pid(), self.tid(), action)?;
         }
         Ok(())
     }
@@ -485,14 +467,31 @@ impl Debuggee {
         ReadWriteMemory::new(addr, size, self.h_proc.0)
     }
 
+    fn free_breakpoint(&mut self) -> (usize, &mut Option<(usize, [u8; BREAKPOINT_SIZE])>) {
+        let idx = match self
+            .breakpoints
+            .iter()
+            .enumerate()
+            .find_map(|(idx, val)| val.is_none().then_some(idx))
+        {
+            Some(idx) => idx,
+            None => {
+                let idx = self.breakpoints.len();
+                self.breakpoints.push(None);
+                idx
+            }
+        };
+        (idx, unsafe { self.breakpoints.get_unchecked_mut(idx) })
+    }
+
     #[tracing::instrument(skip_all, ret)]
     pub fn add_breakpoint(&mut self, addr: usize) -> Result<usize> {
-        let id = self.breakpoints.len();
+        let (id, bp) = self.free_breakpoint();
         let mut opcodes = [0u8; BREAKPOINT_SIZE];
         let break_opcodes = BREAK_OPCODES;
 
+        *bp = Some((addr, opcodes));
         self.restore_opcodes(addr, &break_opcodes[..], Some(&mut opcodes[..]))?;
-        self.breakpoints.push((addr, opcodes));
 
         tracing::info!("Added breakpoint #{id} at 0x{addr:x}");
         Ok(id)
@@ -523,11 +522,10 @@ impl Debuggee {
 
     #[tracing::instrument(skip(self), ret)]
     pub fn remove_breakpoint(&mut self, id: usize) -> Result<()> {
-        if id >= self.breakpoints.len() {
+        let Some((addr, opcodes)) = self.breakpoints.get_mut(id).and_then(|x| x.take()) else {
             return Ok(());
-        }
+        };
 
-        let (addr, opcodes) = self.breakpoints.remove(id);
         self.restore_opcodes(addr, &opcodes[..], None)?;
         tracing::info!("Removed breakpoint #{id} at 0x{addr:x}");
         Ok(())
@@ -580,7 +578,7 @@ impl Debuggee {
     pub unsafe fn get_return_address(&mut self) -> Result<usize> {
         let regs = self.get_registers()?;
         let mut saved_ip = 0usize.to_ne_bytes();
-        self.read_memory_exact(regs.sp, &mut saved_ip[..])?;
+        self.read_memory(regs.sp, &mut saved_ip[..])?;
         Ok(usize::from_ne_bytes(saved_ip))
     }
 
@@ -591,7 +589,7 @@ impl Debuggee {
             let mut nxt_instructions = [0u8; 8];
             let ip = context.Rip as usize;
             let prot = crate::utils::memory::get_protection(self.h_proc.0, ip)?;
-            self.read_memory_exact(ip, &mut nxt_instructions[..])?;
+            self.read_memory(ip, &mut nxt_instructions[..])?;
             tracing::debug!("Single step at 0x{ip:x}: {nxt_instructions:x?} ({prot:?})");
         }
         context.EFlags |= TRAP_FLAG;
