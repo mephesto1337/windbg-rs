@@ -26,9 +26,14 @@ pub enum Command {
 }
 
 const CREATEFILEW_OFFSET: usize = 0x000250F0;
+const CREATEFILEA_OFFSET: usize = 0x00024F90;
 
-#[derive(Debug)]
-struct Strace;
+#[derive(Debug, Default)]
+struct Strace {
+    createfilea: usize,
+    createfilew: usize,
+    exception_counter: usize,
+}
 
 impl Debugger for Strace {
     fn on_dll_load(&mut self, debuggee: &mut Debuggee, load: LoadDll) -> Result<ContinueEvent> {
@@ -39,15 +44,25 @@ impl Debugger for Strace {
             return Ok(ContinueEvent::default());
         }
 
-        debuggee.add_breakpoint(load.base_addr + CREATEFILEW_OFFSET)?;
+        self.createfilea = load.base_addr + CREATEFILEA_OFFSET;
+        self.createfilew = load.base_addr + CREATEFILEW_OFFSET;
+
+        debuggee.add_breakpoint(self.createfilea)?;
+        debuggee.add_breakpoint(self.createfilew)?;
 
         Ok(ContinueEvent::default())
     }
 
     fn on_breakpoint(&mut self, debuggee: &mut Debuggee, addr: usize) -> Result<ContinueEvent> {
-        tracing::info!("Hit BP CreateFileW at {addr:x}");
         let filename_addr = debuggee.get_registers()?.cx;
-        if let Ok(filename) = debuggee.read_string(filename_addr, true) {
+        let maybe_filename = if addr == self.createfilea {
+            debuggee.read_string(filename_addr, false).ok()
+        } else if addr == self.createfilew {
+            debuggee.read_string(filename_addr, true).ok()
+        } else {
+            None
+        };
+        if let Some(filename) = maybe_filename {
             println!("Opening filename {filename:?}");
         }
         Ok(ContinueEvent::default())
@@ -66,10 +81,14 @@ impl Debugger for Strace {
         else {
             return Ok(ContinueEvent::StopDebugging);
         };
+        self.exception_counter += 1;
+        if self.exception_counter > 3 {
+            return Ok(ContinueEvent::StopDebugging);
+        }
 
         let mut buf = [0u8; 16];
-        let n = debuggee.read_memory(*address - 3, &mut buf[..])?;
-        tracing::error!("0x{address:x}: {buf:x?}", buf = &buf[..n]);
+        debuggee.read_memory(*address - 3, &mut buf[..])?;
+        tracing::error!("0x{address:x}: {buf:x?}", buf = &buf[..]);
         Ok(ContinueEvent::Continue)
     }
 }
@@ -82,7 +101,7 @@ fn main() -> Result<()> {
         Command::Spawn { exec, args } => Debuggee::spawn(exec, args.unwrap_or_default())?,
     };
     tracing::info!("Debuggee = {debuggee:?}");
-    let mut debugger = Strace;
+    let mut debugger = Strace::default();
 
     debuggee.run(&mut debugger)?;
 
