@@ -7,4 +7,6 @@ pub use debuggee::Debuggee;
 pub use debugger::Debugger;
 pub use registers::Registers;
 
+pub mod symbols;
+
 pub(crate) mod utils;

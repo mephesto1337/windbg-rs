@@ -7,7 +7,7 @@ use std::{
 use windows::{
     core::Result,
     Win32::{
-        Foundation::HANDLE,
+        Foundation::{ERROR_PARTIAL_COPY, HANDLE},
         System::{
             Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory},
             Memory::{
@@ -98,7 +98,7 @@ pub fn change_protect(
 #[tracing::instrument(skip(buf), level = "trace")]
 pub fn read(handle: HANDLE, addr: usize, buf: &mut [u8]) -> Result<usize> {
     let mut bytes_read = 0;
-    unsafe {
+    let ret = unsafe {
         ReadProcessMemory(
             handle,
             addr as *const c_void,
@@ -106,9 +106,13 @@ pub fn read(handle: HANDLE, addr: usize, buf: &mut [u8]) -> Result<usize> {
             buf.len(),
             Some(addr_of_mut!(bytes_read)),
         )
-    }?;
+    };
 
-    Ok(bytes_read)
+    match ret {
+        Ok(_) => Ok(bytes_read),
+        Err(e) if e.code() == ERROR_PARTIAL_COPY.into() => Ok(bytes_read),
+        Err(e) => Err(e),
+    }
 }
 
 #[tracing::instrument(skip(buf), level = "trace")]

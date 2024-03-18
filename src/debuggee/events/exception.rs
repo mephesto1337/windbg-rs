@@ -43,6 +43,15 @@ pub enum ExceptionCode {
     Other(NTSTATUS),
 }
 
+impl ExceptionCode {
+    pub fn other(&self) -> Option<i32> {
+        match self {
+            Self::Other(NTSTATUS(c)) => Some(*c),
+            _ => None,
+        }
+    }
+}
+
 impl From<NTSTATUS> for ExceptionCode {
     fn from(code: NTSTATUS) -> Self {
         match code {

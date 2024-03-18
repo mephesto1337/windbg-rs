@@ -21,6 +21,24 @@ impl Drop for OwnedView {
     }
 }
 
+pub fn read_into_unitialized<E, F>(buf_vec: &mut Vec<u8>, mut f: F) -> Result<usize, E>
+where
+    F: FnMut(&mut [u8]) -> Result<usize, E>,
+{
+    let old_len = buf_vec.len();
+    let uninit_buf = buf_vec.spare_capacity_mut();
+    if uninit_buf.is_empty() {
+        return Ok(0);
+    }
+    let buf: &mut [u8] =
+        unsafe { std::slice::from_raw_parts_mut(uninit_buf.as_mut_ptr().cast(), uninit_buf.len()) };
+    let n = f(buf)?;
+    unsafe {
+        buf_vec.set_len(old_len + n);
+    }
+    Ok(n)
+}
+
 pub mod filenames;
 pub mod memory;
 pub mod strings;

@@ -1,8 +1,10 @@
+use core::fmt;
+
 use clap::{Parser, Subcommand};
 use windows::core::Result;
 
 use debugger::{
-    debuggee::{Exception, ExceptionCode, ExceptionInfo, LoadDll},
+    debuggee::{Exception, ExceptionInfo, LoadDll},
     debugger::ContinueEvent,
     Debuggee, Debugger,
 };
@@ -25,14 +27,19 @@ pub enum Command {
     },
 }
 
-const CREATEFILEW_OFFSET: usize = 0x000250F0;
-const CREATEFILEA_OFFSET: usize = 0x00024F90;
-
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct Strace {
     createfilea: usize,
     createfilew: usize,
     exception_counter: usize,
+}
+
+impl fmt::Debug for Strace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Strace")
+            .field("ec", &self.exception_counter)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Debugger for Strace {
@@ -44,8 +51,12 @@ impl Debugger for Strace {
             return Ok(ContinueEvent::default());
         }
 
-        self.createfilea = load.base_addr + CREATEFILEA_OFFSET;
-        self.createfilew = load.base_addr + CREATEFILEW_OFFSET;
+        self.createfilea = debuggee
+            .resolv("CreateFileA")
+            .expect("CreateFileA should be present in kernelbase");
+        self.createfilew = debuggee
+            .resolv("CreateFileW")
+            .expect("CreateFileA should be present in kernelbase");
 
         debuggee.add_breakpoint(self.createfilea)?;
         debuggee.add_breakpoint(self.createfilew)?;
@@ -56,14 +67,20 @@ impl Debugger for Strace {
     fn on_breakpoint(&mut self, debuggee: &mut Debuggee, addr: usize) -> Result<ContinueEvent> {
         let filename_addr = debuggee.get_registers()?.cx;
         let maybe_filename = if addr == self.createfilea {
-            debuggee.read_string(filename_addr, false).ok()
+            debuggee
+                .read_string(filename_addr, false)
+                .ok()
+                .map(|x| (x, 'A'))
         } else if addr == self.createfilew {
-            debuggee.read_string(filename_addr, true).ok()
+            debuggee
+                .read_string(filename_addr, true)
+                .ok()
+                .map(|x| (x, 'W'))
         } else {
             None
         };
-        if let Some(filename) = maybe_filename {
-            println!("Opening filename {filename:?}");
+        if let Some((filename, k)) = maybe_filename {
+            println!("Opening filename{k} {filename:?}");
         }
         Ok(ContinueEvent::default())
     }
@@ -73,14 +90,15 @@ impl Debugger for Strace {
             return Ok(ContinueEvent::StopDebugging);
         }
 
-        let Some(Exception {
-            code: ExceptionCode::AccessViolation,
-            address,
-            ..
-        }) = e.chain.first()
-        else {
-            return Ok(ContinueEvent::StopDebugging);
+        let Some(Exception { code, address, .. }) = e.chain.first() else {
+            unreachable!("Exception chain has at least 1 exception");
         };
+
+        if code.other().is_some() {
+            // CLR exceptions
+            return Ok(ContinueEvent::ExceptionNotHandled);
+        }
+
         self.exception_counter += 1;
         if self.exception_counter > 3 {
             return Ok(ContinueEvent::StopDebugging);
@@ -88,7 +106,8 @@ impl Debugger for Strace {
 
         let mut buf = [0u8; 16];
         debuggee.read_memory(*address - 3, &mut buf[..])?;
-        tracing::error!("0x{address:x}: {buf:x?}", buf = &buf[..]);
+        let symbol = debuggee.lookup_addr(*address);
+        tracing::error!("{symbol}: {buf:x?}", buf = &buf[..]);
         Ok(ContinueEvent::Continue)
     }
 }

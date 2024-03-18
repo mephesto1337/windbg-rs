@@ -35,6 +35,7 @@ use windows::{
 use crate::{
     debugger::{ContinueEvent, Debugger},
     process::Process,
+    symbols::Image,
     utils::{
         memory as mem,
         strings::{read_string_utf16, read_string_utf8},
@@ -60,6 +61,7 @@ pub struct Debuggee {
     breakpoints: Vec<Option<(usize, [u8; BREAKPOINT_SIZE])>>,
     prev_breakpoint_addr: usize,
     breakpoint_action: Option<ContinueEvent>,
+    modules: Vec<Image>,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -113,25 +115,36 @@ impl Debuggee {
         Ok(tids)
     }
 
-    fn from_proc(proc: Process, handle: Option<HANDLE>) -> Result<Self> {
-        let h_proc = match handle {
-            Some(h) => h,
-            None => unsafe { OpenProcess(PROCESS_ALL_ACCESS, false, proc.pid()) }?,
-        };
-        unsafe { DebugActiveProcess(proc.pid()) }?;
-        unsafe { DebugBreakProcess(h_proc) }?;
-        let tids = Self::open_threads(proc.pid())?;
-
+    fn build(
+        proc: Process,
+        handle: OwnedHandle,
+        tids: Vec<(u32, OwnedHandle)>,
+        current_tid: u32,
+    ) -> Result<Self> {
+        let main_module = Image::from_file(proc.image())?;
         Ok(Self {
             proc,
-            h_proc: OwnedHandle(h_proc),
+            h_proc: handle,
             tids,
-            current_tid: 0,
+            current_tid,
             breakpoints: Default::default(),
+            modules: vec![main_module],
             breakpoint_action: None,
             prev_breakpoint_addr: 0,
             _not_send: PhantomData,
         })
+    }
+
+    fn from_proc(proc: Process, handle: Option<HANDLE>) -> Result<Self> {
+        let h_proc = OwnedHandle(match handle {
+            Some(h) => h,
+            None => unsafe { OpenProcess(PROCESS_ALL_ACCESS, false, proc.pid()) }?,
+        });
+        unsafe { DebugActiveProcess(proc.pid()) }?;
+        unsafe { DebugBreakProcess(h_proc.0) }?;
+        let tids = Self::open_threads(proc.pid())?;
+
+        Self::build(proc, h_proc, tids, 0)
     }
 
     pub fn attach_pid(pid: u32) -> Result<Self> {
@@ -196,19 +209,15 @@ impl Debuggee {
             process_infomation_buf.assume_init()
         };
 
-        Ok(Self {
-            proc: Process {
+        Self::build(
+            Process {
                 id: dwProcessId,
                 image: application_name.into_string().unwrap(),
             },
-            h_proc: OwnedHandle(hProcess),
-            tids: vec![(dwThreadId, OwnedHandle(hThread))],
-            current_tid: dwThreadId,
-            breakpoints: Vec::new(),
-            breakpoint_action: None,
-            prev_breakpoint_addr: 0,
-            _not_send: PhantomData,
-        })
+            OwnedHandle(hProcess),
+            vec![(dwThreadId, OwnedHandle(hThread))],
+            dwThreadId,
+        )
     }
 
     fn wait_for_event(&mut self, timeout: Option<Duration>) -> Result<DEBUG_EVENT> {
@@ -417,10 +426,12 @@ impl Debuggee {
                 } else {
                     tracing::info!("Loading DLL at 0x{:x}", load_dll.base_addr);
                 }
+                let _ = self.add_image(load_dll.base_addr)?;
                 dbg.on_dll_load(self, load_dll)?
             }
             DebugEvent::UnloadDll(base_addr) => {
                 tracing::info!("Unloadind dll at 0x{base_addr:x}");
+                self.remove_image(base_addr);
                 dbg.on_dll_unload(self, base_addr)?
             }
             DebugEvent::DebugString(s) => {
@@ -438,6 +449,36 @@ impl Debuggee {
             }
         };
         Ok(action)
+    }
+
+    #[tracing::instrument(skip(self), level = "trace", ret)]
+    fn add_image(&mut self, base_addr: usize) -> Result<()> {
+        let image = Image::build(self.h_proc.0, base_addr)?;
+        match self
+            .modules
+            .binary_search_by(|img| img.base_addr().cmp(&base_addr))
+        {
+            Ok(idx) => {
+                tracing::warn!(
+                    "Confict between images {img1} and {image}",
+                    img1 = &self.modules[idx]
+                );
+                self.modules[idx] = image;
+            }
+            Err(idx) => {
+                self.modules.insert(idx, image);
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_image(&mut self, base_addr: usize) {
+        if let Ok(idx) = self
+            .modules
+            .binary_search_by(|img| img.base_addr().cmp(&base_addr))
+        {
+            self.modules.remove(idx);
+        }
     }
 
     pub fn run<D>(&mut self, dbg: &mut D) -> Result<()>
@@ -486,12 +527,13 @@ impl Debuggee {
 
     #[tracing::instrument(skip_all, ret)]
     pub fn add_breakpoint(&mut self, addr: usize) -> Result<usize> {
-        let (id, bp) = self.free_breakpoint();
         let mut opcodes = [0u8; BREAKPOINT_SIZE];
         let break_opcodes = BREAK_OPCODES;
 
-        *bp = Some((addr, opcodes));
         self.restore_opcodes(addr, &break_opcodes[..], Some(&mut opcodes[..]))?;
+
+        let (id, bp) = self.free_breakpoint();
+        *bp = Some((addr, opcodes));
 
         tracing::info!("Added breakpoint #{id} at 0x{addr:x}");
         Ok(id)
@@ -595,5 +637,25 @@ impl Debuggee {
         context.EFlags |= TRAP_FLAG;
         self.set_current_context(&context)?;
         Ok(())
+    }
+
+    pub fn resolv(&self, symbol: &str) -> Option<usize> {
+        match symbol.split_once('!') {
+            Some((module_name, symbol)) => {
+                let module = self
+                    .modules
+                    .iter()
+                    .find(|img| img.name().eq_ignore_ascii_case(module_name))?;
+                module.resolv(symbol)
+            }
+            None => self.modules.iter().find_map(|img| img.resolv(symbol)),
+        }
+    }
+
+    pub fn lookup_addr(&self, addr: usize) -> String {
+        self.modules
+            .iter()
+            .find_map(|img| img.lookup_addr(addr))
+            .unwrap_or_else(|| format!("0x{addr:x}"))
     }
 }
