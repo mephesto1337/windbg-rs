@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use windows::core::Result;
 
 use debugger::{
+    breakpoint::Breakpoint,
     debuggee::{Exception, ExceptionInfo, LoadDll},
     debugger::ContinueEvent,
     Debuggee, Debugger,
@@ -30,6 +31,7 @@ pub enum Command {
 #[derive(Default)]
 struct Strace {
     exception_counter: usize,
+    opened_handle: Option<(String, usize)>,
 }
 
 impl fmt::Debug for Strace {
@@ -62,26 +64,29 @@ impl Debugger for Strace {
         Ok(ContinueEvent::default())
     }
 
-    fn on_breakpoint(&mut self, debuggee: &mut Debuggee, addr: usize) -> Result<ContinueEvent> {
+    fn on_breakpoint(&mut self, debuggee: &mut Debuggee, bp: Breakpoint) -> Result<ContinueEvent> {
+        if let Some((filename, bp_id)) = self.opened_handle.take() {
+            let regs = debuggee.get_registers()?;
+            let handle = regs.ax;
+            println!("Opened {filename:?} with 0x{handle:x}");
+            debuggee.remove_breakpoint(bp_id)?;
+            return Ok(ContinueEvent::default());
+        }
+
         let filename_addr = debuggee.get_registers()?.cx;
-        let symbol = debuggee.lookup_addr(addr);
+        let symbol = debuggee.lookup_addr(bp.addr());
         let maybe_filename = if symbol.eq_ignore_ascii_case("createfilea") {
-            debuggee
-                .read_string(filename_addr, false)
-                .ok()
-                .map(|x| (x, 'A'))
+            debuggee.read_string(filename_addr, false).ok()
         } else if symbol.eq_ignore_ascii_case("createfilew") {
-            debuggee
-                .read_string(filename_addr, true)
-                .ok()
-                .map(|x| (x, 'W'))
+            debuggee.read_string(filename_addr, true).ok()
         } else {
             None
         };
-        if let Some((filename, k)) = maybe_filename {
-            println!("Opening filename{k} {filename:?}");
+        if let Some(filename) = maybe_filename {
+            let ra = unsafe { debuggee.get_return_address() }?;
+            let id = debuggee.add_breakpoint(ra)?;
+            self.opened_handle = Some((filename, id));
         }
-        debuggee.step_over()?;
         Ok(ContinueEvent::default())
     }
 
