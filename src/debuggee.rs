@@ -37,6 +37,7 @@ use windows::{
 };
 
 use crate::{
+    breakpoint::{Breakpoints, BREAKPOINT_SIZE, BREAK_OPCODES},
     debugger::{ContinueEvent, Debugger},
     process::Process,
     symbols::Image,
@@ -47,9 +48,6 @@ use crate::{
     },
     Registers,
 };
-
-const BREAKPOINT_SIZE: usize = 1;
-const BREAK_OPCODES: [u8; BREAKPOINT_SIZE] = [0xcc];
 
 #[cfg(target_arch = "x86_64")]
 mod constants {
@@ -76,7 +74,7 @@ pub struct Debuggee {
     h_proc: OwnedHandle,
     tids: Vec<(u32, OwnedHandle)>,
     current_tid: u32,
-    breakpoints: Vec<Option<(usize, [u8; BREAKPOINT_SIZE])>>,
+    breakpoints: Breakpoints,
     prev_breakpoint_addr: usize,
     breakpoint_action: Option<ContinueEvent>,
     modules: Vec<Image>,
@@ -336,18 +334,13 @@ impl Debuggee {
     where
         D: Debugger,
     {
-        tracing::debug!("BP: {:x?}", &self.breakpoints[..]);
+        tracing::debug!("BP: {:x?}", &self.breakpoints);
         let symbol = self.lookup_addr(addr);
-        if let Some(opcodes) = self
-            .breakpoints
-            .iter()
-            .filter_map(|x| x.as_ref())
-            .find_map(|(a, opcodes)| (*a == addr).then_some(opcodes))
-            .copied()
-        {
+        if let Some(bp) = self.breakpoints.get_by_addr(addr) {
             tracing::info!("Got expected breakpoint at {symbol}");
             let mut orig = [0; BREAKPOINT_SIZE];
-            self.restore_opcodes(addr, &opcodes[..], Some(&mut orig[..]))?;
+            let saved_bc = bp.saved_bc();
+            self.restore_opcodes(addr, &saved_bc, Some(&mut orig[..]))?;
             let mut regs = self.get_registers()?;
             tracing::debug!(
                 "Setting back IP from {ip:x} to {addr:x} (-{n})",
@@ -536,35 +529,9 @@ impl Debuggee {
         ReadWriteMemory::new(addr, size, self.h_proc.0)
     }
 
-    fn free_breakpoint(&mut self) -> (usize, &mut Option<(usize, [u8; BREAKPOINT_SIZE])>) {
-        let idx = match self
-            .breakpoints
-            .iter()
-            .enumerate()
-            .find_map(|(idx, val)| val.is_none().then_some(idx))
-        {
-            Some(idx) => idx,
-            None => {
-                let idx = self.breakpoints.len();
-                self.breakpoints.push(None);
-                idx
-            }
-        };
-        (idx, unsafe { self.breakpoints.get_unchecked_mut(idx) })
-    }
-
-    #[tracing::instrument(skip_all, ret)]
     pub fn add_breakpoint(&mut self, addr: usize) -> Result<usize> {
-        let mut opcodes = [0u8; BREAKPOINT_SIZE];
-        let break_opcodes = BREAK_OPCODES;
-
-        self.restore_opcodes(addr, &break_opcodes[..], Some(&mut opcodes[..]))?;
-
-        let (id, bp) = self.free_breakpoint();
-        *bp = Some((addr, opcodes));
-
-        tracing::info!("Added breakpoint #{id} at 0x{addr:x}");
-        Ok(id)
+        let mut mw = memory::ReadWriteMemory::new(addr, BREAKPOINT_SIZE, self.h_proc.0)?;
+        self.breakpoints.add(&mut mw)
     }
 
     #[tracing::instrument(skip(self), level = "debug", ret)]
@@ -590,15 +557,12 @@ impl Debuggee {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), ret)]
     pub fn remove_breakpoint(&mut self, id: usize) -> Result<()> {
-        let Some((addr, opcodes)) = self.breakpoints.get_mut(id).and_then(|x| x.take()) else {
+        let Some(bp) = self.breakpoints.get(id) else {
             return Ok(());
         };
-
-        self.restore_opcodes(addr, &opcodes[..], None)?;
-        tracing::info!("Removed breakpoint #{id} at 0x{addr:x}");
-        Ok(())
+        let mut mw = memory::ReadWriteMemory::new(bp.addr, BREAKPOINT_SIZE, self.h_proc.0)?;
+        self.breakpoints.remove(&mut mw, id)
     }
 
     fn get_current_thread_handle(&self) -> Result<HANDLE> {

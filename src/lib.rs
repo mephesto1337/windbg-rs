@@ -1,3 +1,4 @@
+mod breakpoint;
 pub mod debuggee;
 pub mod debugger;
 pub mod process;

@@ -1,6 +1,6 @@
 use std::{
     io::{self, Read, Seek, SeekFrom, Write},
-    ops::Neg,
+    ops::{Deref, Neg},
 };
 use windows::{core::Result, Win32::Foundation::HANDLE};
 
@@ -15,6 +15,12 @@ struct Memory {
     old_prot: PageProtection,
 }
 
+impl Memory {
+    pub fn addr(&self) -> usize {
+        self.start + self.offset
+    }
+}
+
 #[derive(Debug)]
 pub struct ReadOnlyMemory(Memory);
 
@@ -22,6 +28,10 @@ impl ReadOnlyMemory {
     pub(super) fn new(start: usize, size: usize, handle: HANDLE) -> Result<Self> {
         let mem = Memory::new(start, size, handle, PageProtection::ReadOnly)?;
         Ok(Self(mem))
+    }
+
+    pub fn addr(&self) -> usize {
+        self.0.addr()
     }
 }
 
@@ -32,6 +42,10 @@ impl ReadWriteMemory {
     pub(super) fn new(start: usize, size: usize, handle: HANDLE) -> Result<Self> {
         let mem = Memory::new(start, size, handle, PageProtection::ReadWrite)?;
         Ok(Self(mem))
+    }
+
+    pub fn addr(&self) -> usize {
+        self.0.addr()
     }
 }
 
@@ -132,6 +146,8 @@ impl Seek for Memory {
                     self.offset = self
                         .offset
                         .saturating_sub(o.try_into().unwrap_or(usize::MAX));
+                } else if o == 0 {
+                    // Nothing
                 } else {
                     let o: u64 = o.try_into().expect("o should be positive");
                     self.offset = self
