@@ -55,7 +55,7 @@ impl Debugger for Strace {
         else {
             return Ok(ContinueEvent::default());
         };
-        let addrs = ntdll.symbols().map(|(a, _)| a).collect::<Vec<_>>();
+        let addrs = ntdll.symbols().filter_map(|(a, n)| n.starts_with("Nt").then_some(a)).collect::<Vec<_>>();
 
         for addr in addrs {
             debuggee.add_breakpoint(addr)?;
