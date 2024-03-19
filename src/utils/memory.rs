@@ -1,9 +1,9 @@
+use bitflags::bitflags;
 use std::{
     ffi::c_void,
     mem::{size_of_val, MaybeUninit},
     ptr::addr_of_mut,
 };
-
 use windows::{
     core::Result,
     Win32::{
@@ -12,8 +12,8 @@ use windows::{
             Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory},
             Memory::{
                 VirtualProtectEx, VirtualQueryEx, PAGE_EXECUTE, PAGE_EXECUTE_READ,
-                PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY, PAGE_PROTECTION_FLAGS,
-                PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY,
+                PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY, PAGE_NOACCESS,
+                PAGE_PROTECTION_FLAGS, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY,
             },
         },
     },
@@ -21,35 +21,44 @@ use windows::{
 
 pub const PAGE_SIZE: usize = 0x1000;
 
-const fn page_start(addr: usize) -> usize {
+pub const fn page_start(addr: usize) -> usize {
     addr & !(PAGE_SIZE - 1)
 }
 
-const fn page_end(addr: usize) -> usize {
+pub const fn page_end(addr: usize) -> usize {
     (addr + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum PageProtection {
-    ExecuteOnly,
-    ExecuteWriteCopy,
-    ReadExecute,
-    ReadOnly,
-    ReadWrite,
-    ReadWriteExecute,
-    WriteCopy,
+bitflags! {
+    #[repr(transparent)]
+    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+    pub struct PageProtection: u32 {
+        const NONE = 0;
+        const COPY = 0b1000;
+        const READ = 0b0100;
+        const WRITE = 0b0010;
+        const EXECUTE = 0b0001;
+
+        const EXECUTE_WRITE_COPY = 0b1111;
+        const READ_EXECUTE = 0b0101;
+        const READ_WRITE = 0b0110;
+        const READ_WRITE_EXECUTE = 0b0111;
+        const WRITE_COPY = 0b1110;
+    }
 }
 
 impl From<PageProtection> for PAGE_PROTECTION_FLAGS {
     fn from(value: PageProtection) -> Self {
         match value {
-            PageProtection::ExecuteOnly => PAGE_EXECUTE,
-            PageProtection::ReadExecute => PAGE_EXECUTE_READ,
-            PageProtection::ReadOnly => PAGE_READONLY,
-            PageProtection::ReadWrite => PAGE_READWRITE,
-            PageProtection::ReadWriteExecute => PAGE_EXECUTE_READWRITE,
-            PageProtection::WriteCopy => PAGE_WRITECOPY,
-            PageProtection::ExecuteWriteCopy => PAGE_EXECUTE_WRITECOPY,
+            PageProtection::EXECUTE => PAGE_EXECUTE,
+            PageProtection::READ_EXECUTE => PAGE_EXECUTE_READ,
+            PageProtection::READ => PAGE_READONLY,
+            PageProtection::READ_WRITE => PAGE_READWRITE,
+            PageProtection::READ_WRITE_EXECUTE => PAGE_EXECUTE_READWRITE,
+            PageProtection::WRITE_COPY => PAGE_WRITECOPY,
+            PageProtection::EXECUTE_WRITE_COPY => PAGE_EXECUTE_WRITECOPY,
+            PageProtection::NONE => PAGE_NOACCESS,
+            _ => unreachable!(),
         }
     }
 }
@@ -57,13 +66,14 @@ impl From<PageProtection> for PAGE_PROTECTION_FLAGS {
 impl From<PAGE_PROTECTION_FLAGS> for PageProtection {
     fn from(value: PAGE_PROTECTION_FLAGS) -> Self {
         match value {
-            PAGE_EXECUTE => Self::ExecuteOnly,
-            PAGE_EXECUTE_READ => Self::ReadExecute,
-            PAGE_READONLY => Self::ReadOnly,
-            PAGE_READWRITE => Self::ReadWrite,
-            PAGE_EXECUTE_READWRITE => Self::ReadWriteExecute,
-            PAGE_WRITECOPY => Self::WriteCopy,
-            PAGE_EXECUTE_WRITECOPY => Self::ExecuteWriteCopy,
+            PAGE_EXECUTE => Self::EXECUTE,
+            PAGE_EXECUTE_READ => Self::READ_EXECUTE,
+            PAGE_READONLY => Self::READ,
+            PAGE_READWRITE => Self::READ_WRITE,
+            PAGE_EXECUTE_READWRITE => Self::READ_WRITE_EXECUTE,
+            PAGE_WRITECOPY => Self::WRITE_COPY,
+            PAGE_EXECUTE_WRITECOPY => Self::EXECUTE_WRITE_COPY,
+            PAGE_NOACCESS => Self::NONE,
             PAGE_PROTECTION_FLAGS(x) => unreachable!("Invalid PAGE_PROTECTION_FLAGS value 0x{x:x}"),
         }
     }

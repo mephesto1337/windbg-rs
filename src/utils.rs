@@ -40,5 +40,6 @@ where
 }
 
 pub mod filenames;
+pub mod hex;
 pub mod memory;
 pub mod strings;

@@ -145,6 +145,13 @@ impl OptionalHeader {
             OptionalHeader::OptionalHeader64(ref o64) => o64.image_base as usize,
         }
     }
+
+    pub fn entry_point(&self) -> usize {
+        match self {
+            OptionalHeader::OptionalHeader32(ref o32) => o32.address_of_entry_point as usize,
+            OptionalHeader::OptionalHeader64(ref o64) => o64.address_of_entry_point as usize,
+        }
+    }
 }
 
 #[repr(C)]
@@ -283,14 +290,18 @@ pub fn parse_symbols(input: &[u8], hdr: &ImageHeader) -> Result<(String, Vec<(us
     };
 
     if export_table_info.virtual_address == 0 {
-        return Ok((String::new(), Vec::new()));
+        return Ok((
+            String::new(),
+            vec![(hdr.optional_header.entry_point(), "_entry".into())],
+        ));
     }
 
     let export_tables_buf =
         &input[export_table_info.virtual_address as usize..][..export_table_info.size as usize];
     let (export_table, _) = from_buffer!(export_tables_buf, ImageExportDirectory)?;
 
-    let mut symbols = Vec::with_capacity(export_table.number_of_names as usize);
+    let mut symbols = Vec::with_capacity(export_table.number_of_names as usize + 1);
+    symbols.push((hdr.optional_header.entry_point(), "_entry".into()));
 
     let module_name =
         unsafe { ::std::ffi::CStr::from_ptr(input[export_table.name as usize..].as_ptr().cast()) }

@@ -8,10 +8,6 @@ use std::{
     time::Duration,
 };
 
-use capstone::{
-    arch::{x86::ArchSyntax, BuildsCapstone, BuildsCapstoneSyntax},
-    Capstone,
-};
 use windows::{
     core::{Error, Result, PCSTR, PSTR},
     Win32::{
@@ -40,21 +36,20 @@ use crate::{
     breakpoint::{Breakpoints, BREAKPOINT_SIZE, BREAK_OPCODES},
     debugger::{ContinueEvent, Debugger},
     process::Process,
+    registers::EFlags,
     symbols::Image,
     utils::{
-        memory as mem,
+        memory::{self as mem, get_protection, page_start, PAGE_SIZE},
         strings::{read_string_utf16, read_string_utf8},
         OwnedHandle,
     },
-    Registers,
+    Disassembler, Registers,
 };
 
 #[cfg(target_arch = "x86_64")]
 mod constants {
-    use capstone::arch::x86::ArchMode;
     use windows::Win32::System::Diagnostics::Debug::{CONTEXT_ALL_AMD64, CONTEXT_FLAGS};
     pub(super) const CONTEXT_ALL: CONTEXT_FLAGS = CONTEXT_ALL_AMD64;
-    pub(super) const CAPSTONE_MODE: ArchMode = ArchMode::Mode64;
 }
 #[cfg(target_arch = "x86")]
 mod constants {
@@ -66,9 +61,6 @@ mod constants {
 
 use self::constants::*;
 
-mod eflags;
-pub use eflags::EFlags;
-
 pub struct Debuggee {
     proc: Process,
     h_proc: OwnedHandle,
@@ -78,7 +70,6 @@ pub struct Debuggee {
     prev_breakpoint_addr: usize,
     breakpoint_action: Option<ContinueEvent>,
     modules: Vec<Image>,
-    cs: Capstone,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -139,13 +130,6 @@ impl Debuggee {
         current_tid: u32,
     ) -> Result<Self> {
         let main_module = Image::from_file(proc.image())?;
-        let cs = Capstone::new()
-            .x86()
-            .mode(CAPSTONE_MODE)
-            .syntax(ArchSyntax::Intel)
-            .detail(true)
-            .build()
-            .expect("Invalid builtin paramaters for Capstone");
         Ok(Self {
             proc,
             h_proc: handle,
@@ -154,7 +138,6 @@ impl Debuggee {
             breakpoints: Default::default(),
             modules: vec![main_module],
             breakpoint_action: None,
-            cs,
             prev_breakpoint_addr: 0,
             _not_send: PhantomData,
         })
@@ -538,7 +521,25 @@ impl Debuggee {
         self.breakpoints.add(&mut mw)
     }
 
-    #[tracing::instrument(skip(self), level = "debug", ret)]
+    pub fn add_breakpoints(&mut self, addrs: impl Iterator<Item = usize>) -> Result<()> {
+        let mut addrs: Vec<_> = addrs.collect();
+        addrs.sort();
+        tracing::debug!("addrs = {addrs:x?}");
+        let mut addrs = &addrs[..];
+        while !addrs.is_empty() {
+            let start_addr = addrs.first().copied().map(page_start).unwrap();
+            let end_offset = addrs
+                .iter()
+                .position(|&a| a >= (start_addr + PAGE_SIZE))
+                .unwrap_or(addrs.len());
+            let mut mw = self.get_readwrite_memory(start_addr, PAGE_SIZE)?;
+            self.breakpoints.add_many(&mut mw, &addrs[..end_offset])?;
+            addrs = &addrs[end_offset..];
+        }
+        Ok(())
+    }
+
+    #[tracing::instrument(skip_all, level = "trace", ret)]
     fn restore_opcodes(
         &mut self,
         addr: usize,
@@ -626,24 +627,19 @@ impl Debuggee {
         let ip = context.Rip as usize;
         if tracing::enabled!(tracing::Level::TRACE) {
             let mut nxt_instructions = [0u8; 8];
-            let prot = crate::utils::memory::get_protection(self.h_proc.0, ip)?;
+            let prot = get_protection(self.h_proc.0, ip)?;
             self.read_memory(ip, &mut nxt_instructions[..])?;
-            tracing::trace!("Single step at 0x{ip:x}: {nxt_instructions:x?} ({prot:?})");
+            let insts = Disassembler::new().disasm(&nxt_instructions[..], ip)?;
+            tracing::trace!("Single step at 0x{ip:x} ({prot:?}):\n{insts}");
         }
         context.EFlags |= EFlags::TF.bits();
         self.set_current_context(&context)?;
         Ok(ip)
     }
 
-    fn is_call_instruction(&self, bc: &[u8], addr: usize) -> bool {
-        let Ok(insts) = self.cs.disasm_count(bc, addr as u64, 1) else {
-            return false;
-        };
-        let Some(first) = insts.first() else {
-            return false;
-        };
-        tracing::debug!("{first}");
-        first.mnemonic() == Some("call")
+    fn is_call_instruction(&self, bc: &[u8]) -> bool {
+        let disas = Disassembler::new();
+        disas.is_next_mnemonic(bc, |ins| ins == "call")
     }
 
     #[tracing::instrument(skip(self), level = "debug", ret)]
@@ -652,7 +648,7 @@ impl Debuggee {
         let mut instructions = [0u8; 8];
         for _ in 0..10 {
             self.read_memory(ip, &mut instructions[..])?;
-            if self.is_call_instruction(&instructions[..], ip) {
+            if self.is_call_instruction(&instructions[..]) {
                 break;
             }
             self.continue_debug_event(self.pid(), self.tid(), ContinueEvent::Continue)?;

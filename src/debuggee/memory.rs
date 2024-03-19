@@ -4,7 +4,7 @@ use std::{
 };
 use windows::{core::Result, Win32::Foundation::HANDLE};
 
-use crate::utils::memory::{self, change_protect, PageProtection};
+use crate::utils::memory::{self, change_protect, get_protection, PageProtection};
 
 #[derive(Debug)]
 struct Memory {
@@ -12,12 +12,29 @@ struct Memory {
     size: usize,
     offset: usize,
     handle: HANDLE,
-    old_prot: PageProtection,
+    old_prot: Option<PageProtection>,
 }
 
 impl Memory {
     pub fn addr(&self) -> usize {
         self.start + self.offset
+    }
+
+    fn new(start: usize, size: usize, handle: HANDLE, prot: PageProtection) -> Result<Self> {
+        let cur_prot = get_protection(handle, start)?;
+        let old_prot = if cur_prot & prot == prot {
+            None
+        } else {
+            Some(change_protect(handle, start, size, prot)?)
+        };
+
+        Ok(Self {
+            start,
+            size,
+            offset: 0,
+            handle,
+            old_prot,
+        })
     }
 }
 
@@ -26,7 +43,7 @@ pub struct ReadOnlyMemory(Memory);
 
 impl ReadOnlyMemory {
     pub(super) fn new(start: usize, size: usize, handle: HANDLE) -> Result<Self> {
-        let mem = Memory::new(start, size, handle, PageProtection::ReadOnly)?;
+        let mem = Memory::new(start, size, handle, PageProtection::READ)?;
         Ok(Self(mem))
     }
 
@@ -40,7 +57,7 @@ pub struct ReadWriteMemory(Memory);
 
 impl ReadWriteMemory {
     pub(super) fn new(start: usize, size: usize, handle: HANDLE) -> Result<Self> {
-        let mem = Memory::new(start, size, handle, PageProtection::ReadWrite)?;
+        let mem = Memory::new(start, size, handle, PageProtection::READ_WRITE)?;
         Ok(Self(mem))
     }
 
@@ -49,22 +66,11 @@ impl ReadWriteMemory {
     }
 }
 
-impl Memory {
-    fn new(start: usize, size: usize, handle: HANDLE, prot: PageProtection) -> Result<Self> {
-        let old_prot = change_protect(handle, start, size, prot)?;
-        Ok(Self {
-            start,
-            size,
-            offset: 0,
-            handle,
-            old_prot,
-        })
-    }
-}
-
 impl Drop for Memory {
     fn drop(&mut self) {
-        let _ = change_protect(self.handle, self.start, self.size, self.old_prot);
+        if let Some(prot) = self.old_prot.take() {
+            let _ = change_protect(self.handle, self.start, self.size, prot);
+        }
     }
 }
 
@@ -132,12 +138,28 @@ impl Seek for Memory {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         match pos {
             SeekFrom::Start(o) => {
-                self.offset = o.try_into().unwrap_or(self.size);
+                if o > self.size as u64 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "offset is out of bounds",
+                    ));
+                }
+                self.offset = o as usize;
             }
             SeekFrom::End(o) => {
                 if o < 0 {
                     let o: u64 = o.neg().try_into().expect("o should be positive");
-                    self.offset = self.size.saturating_sub(o.try_into().unwrap_or(usize::MAX));
+                    self.offset = self.size.checked_sub(o as usize).ok_or(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Cannot go before start",
+                    ))?;
+                } else if o == 0 {
+                    self.offset = self.size;
+                } else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Cannot go past end",
+                    ));
                 }
             }
             SeekFrom::Current(o) => {
@@ -145,7 +167,11 @@ impl Seek for Memory {
                     let o: u64 = o.neg().try_into().expect("o should be positive");
                     self.offset = self
                         .offset
-                        .saturating_sub(o.try_into().unwrap_or(usize::MAX));
+                        .checked_sub(o.try_into().unwrap_or(usize::MAX))
+                        .ok_or(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "Cannot go before start",
+                        ))?;
                 } else if o == 0 {
                     // Nothing
                 } else {
@@ -154,7 +180,10 @@ impl Seek for Memory {
                         .offset
                         .saturating_add(o.try_into().unwrap_or(usize::MAX));
                     if self.offset > self.size {
-                        self.offset = self.size;
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "Cannot go past end",
+                        ));
                     }
                 }
             }

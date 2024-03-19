@@ -1,6 +1,15 @@
-use core::fmt;
+use std::{
+    fmt,
+    io::{Read, Seek, SeekFrom},
+    mem::size_of,
+};
 
-use windows::Win32::System::Diagnostics::Debug::CONTEXT;
+use windows::{core::Result, Win32::System::Diagnostics::Debug::CONTEXT};
+
+use crate::{debuggee::ReadOnlyMemory, utils::hex::Hex, Debuggee};
+
+mod eflags;
+pub use eflags::EFlags;
 
 #[derive(Clone)]
 pub struct Registers {
@@ -13,7 +22,7 @@ pub struct Registers {
     pub di: usize,
     pub sp: usize,
     pub bp: usize,
-    pub flags: usize,
+    pub flags: EFlags,
 
     #[cfg(target_arch = "x86_64")]
     pub r8: usize,
@@ -39,28 +48,28 @@ impl fmt::Debug for Registers {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut dbg_struct = f.debug_struct("Registers");
         dbg_struct
-            .field("ip", &self.ip)
-            .field("ax", &self.ax)
-            .field("bx", &self.bx)
-            .field("cx", &self.cx)
-            .field("dx", &self.dx)
-            .field("si", &self.si)
-            .field("di", &self.di)
-            .field("sp", &self.sp)
-            .field("bp", &self.bp)
+            .field("ip", &Hex(self.ip))
+            .field("ax", &Hex(self.ax))
+            .field("bx", &Hex(self.bx))
+            .field("cx", &Hex(self.cx))
+            .field("dx", &Hex(self.dx))
+            .field("si", &Hex(self.si))
+            .field("di", &Hex(self.di))
+            .field("sp", &Hex(self.sp))
+            .field("bp", &Hex(self.bp))
             .field("flags", &self.flags);
 
         #[cfg(target_arch = "x86_64")]
         {
             dbg_struct
-                .field("r8", &self.r8)
-                .field("r9", &self.r9)
-                .field("r10", &self.r10)
-                .field("r11", &self.r11)
-                .field("r12", &self.r12)
-                .field("r13", &self.r13)
-                .field("r14", &self.r14)
-                .field("r15", &self.r15);
+                .field("r8", &Hex(self.r8))
+                .field("r9", &Hex(self.r9))
+                .field("r10", &Hex(self.r10))
+                .field("r11", &Hex(self.r11))
+                .field("r12", &Hex(self.r12))
+                .field("r13", &Hex(self.r13))
+                .field("r14", &Hex(self.r14))
+                .field("r15", &Hex(self.r15));
         }
 
         dbg_struct.finish()
@@ -104,7 +113,7 @@ impl From<CONTEXT> for Registers {
             di: value.Rdi as usize,
             sp: value.Rsp as usize,
             bp: value.Rbp as usize,
-            flags: value.EFlags as usize,
+            flags: EFlags::from_bits(value.EFlags).unwrap(),
             #[cfg(target_arch = "x86_64")]
             r8: value.R8 as usize,
             #[cfg(target_arch = "x86_64")]
@@ -139,7 +148,7 @@ impl From<Registers> for CONTEXT {
         context.Rdi = value.di as u64;
         context.Rsp = value.sp as u64;
         context.Rbp = value.bp as u64;
-        context.EFlags = value.flags as u32;
+        context.EFlags = value.flags.bits();
         #[cfg(target_arch = "x86_64")]
         {
             context.R8 = value.r8 as u64;
@@ -152,5 +161,38 @@ impl From<Registers> for CONTEXT {
             context.R15 = value.r15 as u64;
         }
         context
+    }
+}
+
+impl Registers {
+    #[cfg(target_arch = "x86_64")]
+    pub fn get_arg(&self, stack: &mut ReadOnlyMemory, idx: usize) -> Result<usize> {
+        match idx {
+            0 => Ok(self.cx),
+            1 => Ok(self.dx),
+            2 => Ok(self.r8),
+            3 => Ok(self.r9),
+            _ => {
+                let offset = (idx - 3) * size_of::<u64>();
+                let mut arg = 0u64.to_ne_bytes();
+                stack.seek(SeekFrom::Start(offset as u64))?;
+                stack.read_exact(&mut arg[..])?;
+                Ok(u64::from_ne_bytes(arg) as usize)
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86")]
+    fn get_arg(&self, stack: &mut ReadOnlyMemory, idx: usize) -> Result<usize> {
+        let offset = (idx + 1) * size_of::<u32>();
+        let mut arg = 0u32.to_ne_bytes();
+        stack.seek(SeekFrom::Start(offset as u64))?;
+        stack.read_exact(&mut arg[..])?;
+        Ok(u32::from_ne_bytes(arg) as usize)
+    }
+
+    pub fn open_stack(&self, debuggee: &Debuggee) -> Result<ReadOnlyMemory> {
+        const STACK_SIZE: usize = 16 * size_of::<usize>();
+        debuggee.get_readonly_memory(self.sp, STACK_SIZE)
     }
 }
