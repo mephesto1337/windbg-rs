@@ -29,20 +29,20 @@ pub enum Command {
 }
 
 #[derive(Default)]
-struct Strace {
+struct CreateFile {
     exception_counter: usize,
     opened_handle: Option<(String, usize)>,
 }
 
-impl fmt::Debug for Strace {
+impl fmt::Debug for CreateFile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Strace")
+        f.debug_struct("CreateFile")
             .field("ec", &self.exception_counter)
             .finish_non_exhaustive()
     }
 }
 
-impl Debugger for Strace {
+impl Debugger for CreateFile {
     fn on_dll_load(&mut self, debuggee: &mut Debuggee, load: LoadDll) -> Result<ContinueEvent> {
         let Some(filename) = load.filename.as_ref() else {
             return Ok(ContinueEvent::default());
@@ -125,7 +125,7 @@ fn main() -> Result<()> {
         Command::Spawn { exec, args } => Debuggee::spawn(exec, args.unwrap_or_default())?,
     };
     tracing::info!("Debuggee = {debuggee:?}");
-    let mut debugger = Strace::default();
+    let mut debugger = CreateFile::default();
 
     debuggee.run(&mut debugger)?;
 
