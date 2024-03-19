@@ -28,7 +28,7 @@ impl fmt::Display for Image {
 }
 
 impl Image {
-    pub(crate) fn from_file(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let buf = std::fs::read(path)?;
         Self::build_inner(&buf[..], None, 0)
     }
@@ -111,7 +111,14 @@ impl Image {
     pub fn contains(&self, addr: usize) -> bool {
         self.base_addr <= addr && addr < self.end_addr
     }
+
     pub fn name(&self) -> &str {
         self.name.as_str()
+    }
+
+    pub fn symbols(&self) -> impl Iterator<Item = (usize, &str)> {
+        self.symbols
+            .iter()
+            .map(|(rva, name)| (*rva + self.base_addr, name.as_str()))
     }
 }

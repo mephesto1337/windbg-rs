@@ -254,6 +254,10 @@ impl Debuggee {
         Ok(unsafe { debug_event.assume_init() })
     }
 
+    pub fn modules(&self) -> &[Image] {
+        &self.modules[..]
+    }
+
     pub fn pid(&self) -> u32 {
         self.proc.pid()
     }
@@ -334,7 +338,7 @@ impl Debuggee {
     where
         D: Debugger,
     {
-        tracing::debug!("BP: {:x?}", &self.breakpoints);
+        tracing::trace!("BP: {:x?}", &self.breakpoints);
         let symbol = self.lookup_addr(addr);
         if let Some(bp) = self.breakpoints.get_by_addr(addr).copied() {
             tracing::info!("Got expected breakpoint at {symbol}");
@@ -447,7 +451,7 @@ impl Debuggee {
                 } else {
                     tracing::info!("Loading DLL at 0x{:x}", load_dll.base_addr);
                 }
-                let _ = self.add_image(load_dll.base_addr)?;
+                let _ = self.add_image(load_dll.base_addr);
                 dbg.on_dll_load(self, load_dll)?
             }
             DebugEvent::UnloadDll(base_addr) => {

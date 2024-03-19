@@ -10,12 +10,16 @@ name = "debugger"
 name = "strace"
 path = "examples/strace.rs"
 
+[[example]]
+name = "createfile"
+path = "examples/createfile.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 bitflags = "2.5.0"
 capstone = "0.12.0"
-tracing = { version = "0.1.40", features = ["release_max_level_trace", "max_level_trace"] }
+tracing = { version = "0.1.40", features = ["release_max_level_debug", "max_level_trace"] }
 windows = { version = "0.54.0", features = ["Win32_System_ProcessStatus", "Win32_System_Diagnostics_Debug", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_Memory", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Kernel"] }
 
 [dev-dependencies]
