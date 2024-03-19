@@ -82,7 +82,7 @@ impl Breakpoints {
             return Ok(());
         };
 
-        assert_eq!(addr as u64, mem.stream_position().unwrap());
+        assert_eq!(addr, mem.addr());
         mem.write_all(&saved_bc[..])?;
         tracing::info!("Removed breakpoint #{id} at 0x{addr:x}");
         Ok(())

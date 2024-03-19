@@ -3,7 +3,10 @@ use windows::{
     Win32::Foundation::{DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED, DBG_REPLY_LATER, NTSTATUS},
 };
 
-use crate::debuggee::{CreateProcessInfo, CreateThreadInfo, Debuggee, ExceptionInfo, LoadDll, Rip};
+use crate::{
+    breakpoint::Breakpoint,
+    debuggee::{CreateProcessInfo, CreateThreadInfo, Debuggee, ExceptionInfo, LoadDll, Rip},
+};
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
 pub enum ContinueEvent {
@@ -83,8 +86,8 @@ pub trait Debugger: std::fmt::Debug {
         Ok(ContinueEvent::default())
     }
 
-    fn on_breakpoint(&mut self, debuggee: &mut Debuggee, addr: usize) -> Result<ContinueEvent> {
-        let _ = (debuggee, addr);
+    fn on_breakpoint(&mut self, debuggee: &mut Debuggee, bp: Breakpoint) -> Result<ContinueEvent> {
+        let _ = (debuggee, bp);
         Ok(ContinueEvent::default())
     }
 }

@@ -1,6 +1,6 @@
 use std::{
     io::{self, Read, Seek, SeekFrom, Write},
-    ops::{Deref, Neg},
+    ops::Neg,
 };
 use windows::{core::Result, Win32::Foundation::HANDLE};
 

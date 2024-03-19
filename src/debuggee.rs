@@ -336,7 +336,7 @@ impl Debuggee {
     {
         tracing::debug!("BP: {:x?}", &self.breakpoints);
         let symbol = self.lookup_addr(addr);
-        if let Some(bp) = self.breakpoints.get_by_addr(addr) {
+        if let Some(bp) = self.breakpoints.get_by_addr(addr).copied() {
             tracing::info!("Got expected breakpoint at {symbol}");
             let mut orig = [0; BREAKPOINT_SIZE];
             let saved_bc = bp.saved_bc();
@@ -349,7 +349,7 @@ impl Debuggee {
             );
             regs.ip = addr;
             self.set_registers(regs)?;
-            let action = dbg.on_breakpoint(self, addr)?;
+            let action = dbg.on_breakpoint(self, bp)?;
             self.breakpoint_action = Some(action);
             self.single_step()?;
             // self.restore_opcodes(addr, &orig[..], None)?;
