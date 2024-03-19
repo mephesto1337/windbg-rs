@@ -51,6 +51,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitflags"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf4b9d6a944f767f8e5e0db018570623c85f3d925ac718db4e06d0187adb21c1"
+
+[[package]]
 name = "capstone"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -217,6 +223,7 @@ checksum = "e6ecd384b10a64542d77071bd64bd7b231f4ed5940fba55e98c3de13824cf3d7"
 name = "strace-win"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "capstone",
  "clap",
  "tracing",

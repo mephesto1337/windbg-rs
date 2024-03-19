@@ -67,7 +67,9 @@ mod constants {
 }
 
 use self::constants::*;
-const TRAP_FLAG: u32 = 1 << 8;
+
+mod eflags;
+pub use eflags::EFlags;
 
 pub struct Debuggee {
     proc: Process,
@@ -660,7 +662,7 @@ impl Debuggee {
             self.read_memory(ip, &mut nxt_instructions[..])?;
             tracing::trace!("Single step at 0x{ip:x}: {nxt_instructions:x?} ({prot:?})");
         }
-        context.EFlags |= TRAP_FLAG;
+        context.EFlags |= EFlags::TF.bits();
         self.set_current_context(&context)?;
         Ok(ip)
     }
