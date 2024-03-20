@@ -4,6 +4,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     marker::PhantomData,
     mem::{size_of, MaybeUninit},
+    ops::{Deref, DerefMut},
     ptr::{addr_of, addr_of_mut},
     time::Duration,
 };
@@ -81,6 +82,23 @@ pub use events::{
 
 mod memory;
 pub use memory::{ReadOnlyMemory, ReadWriteMemory};
+
+#[repr(align(16))]
+struct Context(CONTEXT);
+
+impl Deref for Context {
+    type Target = CONTEXT;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Context {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 impl fmt::Debug for Debuggee {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -577,43 +595,43 @@ impl Debuggee {
         ))
     }
 
-    fn get_current_context(&self) -> Result<CONTEXT> {
+    fn get_current_context(&self) -> Result<Context> {
         let handle = self.get_current_thread_handle()?;
-        #[repr(align(16))]
-        struct Context(CONTEXT);
 
         let mut context = Context(CONTEXT {
             ContextFlags: CONTEXT_ALL,
             ..Default::default()
         });
         unsafe { GetThreadContext(handle, addr_of_mut!(context.0)) }?;
-        Ok(context.0)
+        Ok(context)
     }
 
-    fn set_current_context(&self, context: &CONTEXT) -> Result<()> {
+    #[tracing::instrument(skip_all, ret, level = "trace")]
+    fn set_current_context(&self, context: &Context) -> Result<()> {
         let handle = self.get_current_thread_handle()?;
-        unsafe { SetThreadContext(handle, context as *const _) }?;
+        tracing::trace!("Elfags = {}", EFlags::from_context(&context.0));
+        unsafe { SetThreadContext(handle, addr_of!(context.0)) }?;
         Ok(())
     }
 
     #[tracing::instrument(skip(self), ret, level = "trace")]
     pub fn get_registers(&mut self) -> Result<Registers> {
         let context = self.get_current_context()?;
-        let regs = context.into();
+        let regs = context.0.into();
         Ok(regs)
     }
 
     #[tracing::instrument(skip_all, ret, level = "trace")]
     pub fn set_registers(&mut self, registers: Registers) -> Result<Registers> {
-        let context: CONTEXT = registers.into();
+        let context = Context(registers.into());
         self.set_current_context(&context)?;
-        Ok(context.into())
+        Ok(context.0.into())
     }
 
     /// # Safety
     /// * must be called at the first instruction of a function in order to have a significant
     ///   result
-    #[tracing::instrument(skip(self), level = "trace")]
+    #[tracing::instrument(skip(self), level = "trace", ret)]
     pub unsafe fn get_return_address(&mut self) -> Result<usize> {
         let regs = self.get_registers()?;
         let mut saved_ip = 0usize.to_ne_bytes();
