@@ -1,4 +1,5 @@
 use bitflags::bitflags;
+use core::fmt;
 use std::{
     ffi::c_void,
     mem::{size_of_val, MaybeUninit},
@@ -44,6 +45,19 @@ bitflags! {
         const READ_WRITE = 0b0110;
         const READ_WRITE_EXECUTE = 0b0111;
         const WRITE_COPY = 0b1110;
+    }
+}
+
+impl fmt::Display for PageProtection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut sep = "";
+        for (name, flag) in self.iter_names() {
+            if self.contains(flag) {
+                write!(f, "{sep}{name}")?;
+                sep = "|";
+            }
+        }
+        Ok(())
     }
 }
 
@@ -101,7 +115,6 @@ pub fn change_protect(
         old_protections_buf.assume_init()
     };
     let old_protections = old_protections.into();
-    tracing::trace!("Change protection of {start_addr:x} from {old_protections:?} to {prot:?}");
     Ok(old_protections)
 }
 

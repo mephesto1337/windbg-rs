@@ -1,4 +1,7 @@
+use core::fmt;
+
 use bitflags::bitflags;
+use windows::Win32::System::Diagnostics::Debug::CONTEXT;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,5 +50,24 @@ bitflags! {
         const CF = 1 << 0;
 
         const _ = !0;
+    }
+}
+
+impl fmt::Display for EFlags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut sep = "";
+        for (name, flag) in self.iter_names() {
+            if self.contains(flag) {
+                write!(f, "{sep}{name}")?;
+                sep = "|";
+            }
+        }
+        Ok(())
+    }
+}
+
+impl EFlags {
+    pub fn from_context(ctx: &CONTEXT) -> Self {
+        Self::from_bits(ctx.EFlags).unwrap()
     }
 }

@@ -73,6 +73,7 @@ impl Image {
         })
     }
 
+    #[tracing::instrument(skip(self), fields(image = self.name()), ret, level = "trace")]
     pub fn resolv(&self, symbol: &str) -> Option<usize> {
         self.symbols.iter().find_map(|(addr, name)| {
             name.eq_ignore_ascii_case(symbol)

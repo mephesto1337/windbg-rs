@@ -75,7 +75,9 @@ impl Drop for Memory {
 }
 
 impl Read for Memory {
-    fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
+    #[tracing::instrument(skip(buf), fields(buflen = buf.len()), level = "trace", ret)]
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut buf = buf;
         if self.offset >= self.size {
             return Ok(0);
         }
@@ -92,6 +94,7 @@ impl Read for Memory {
 }
 
 impl Write for Memory {
+    #[tracing::instrument(level = "trace", ret)]
     fn write(&mut self, mut buf: &[u8]) -> io::Result<usize> {
         if self.offset >= self.size {
             return Ok(0);

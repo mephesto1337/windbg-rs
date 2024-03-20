@@ -272,12 +272,9 @@ impl Debuggee {
         Ok(())
     }
 
-    pub fn write_memory(&mut self, mut addr: usize, mut buf: &[u8]) -> Result<()> {
-        while !buf.is_empty() {
-            let n = mem::write(self.h_proc.0, addr, buf)?;
-            addr += n;
-            buf = &buf[n..];
-        }
+    pub fn write_memory(&mut self, addr: usize, buf: &[u8]) -> Result<()> {
+        let mut rw = memory::ReadWriteMemory::new(addr, buf.len(), self.h_proc.0)?;
+        rw.write_all(buf)?;
 
         Ok(())
     }
@@ -291,13 +288,9 @@ impl Debuggee {
         }
     }
 
-    pub fn read_memory(&mut self, mut addr: usize, mut buf: &mut [u8]) -> Result<()> {
-        while !buf.is_empty() {
-            let n = mem::read(self.h_proc.0, addr, buf)?;
-            addr += n;
-            buf = &mut buf[n..];
-        }
-
+    pub fn read_memory(&mut self, addr: usize, buf: &mut [u8]) -> Result<()> {
+        let mut ro = memory::ReadOnlyMemory::new(addr, buf.len(), self.h_proc.0)?;
+        ro.read_exact(buf)?;
         Ok(())
     }
 
