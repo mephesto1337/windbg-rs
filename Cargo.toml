@@ -8,7 +8,7 @@ name = "debugger"
 
 [[example]]
 name = "strace"
-path = "examples/strace.rs"
+path = "examples/strace/main.rs"
 
 [[example]]
 name = "createfile"
