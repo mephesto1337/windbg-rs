@@ -34,7 +34,7 @@ use windows::{
 };
 
 use crate::{
-    breakpoint::{Breakpoints, BREAKPOINT_SIZE, BREAK_OPCODES},
+    breakpoint::{Breakpoint, Breakpoints, BREAKPOINT_SIZE, BREAK_OPCODES},
     debugger::{ContinueEvent, Debugger},
     process::Process,
     registers::EFlags,
@@ -341,11 +341,10 @@ impl Debuggee {
     {
         tracing::trace!("BP: {:x?}", &self.breakpoints);
         let symbol = self.lookup_addr(addr);
-        if let Some(bp) = self.breakpoints.get_by_addr(addr).copied() {
+        if let Some(bp) = self.breakpoints.get_by_addr(addr).cloned() {
             tracing::info!("Got expected breakpoint at {symbol}");
             let mut orig = [0; BREAKPOINT_SIZE];
-            let saved_bc = bp.saved_bc();
-            self.restore_opcodes(addr, &saved_bc, Some(&mut orig[..]))?;
+            self.restore_opcodes(addr, bp.saved_bc(), Some(&mut orig[..]))?;
             let mut regs = self.get_registers()?;
             tracing::debug!(
                 "Setting back IP from {ip:x} to {addr:x} (-{n})",
@@ -354,7 +353,11 @@ impl Debuggee {
             );
             regs.ip = addr;
             self.set_registers(regs)?;
-            let action = dbg.on_breakpoint(self, bp)?;
+            let action = dbg.on_breakpoint(self, &bp)?;
+            if bp.is_one_shot() {
+                tracing::debug!("Removing one-shot BP at {:x}", bp.addr());
+                self.remove_breakpoint(bp.id())?;
+            }
             self.breakpoint_action = Some(action);
             self.single_step()?;
             // self.restore_opcodes(addr, &orig[..], None)?;
@@ -534,9 +537,25 @@ impl Debuggee {
         ReadWriteMemory::new(addr, size, self.h_proc.0)
     }
 
-    pub fn add_breakpoint(&mut self, addr: usize) -> Result<usize> {
+    pub fn add_breakpoint_by_addr(&mut self, addr: usize) -> Result<&mut Breakpoint> {
         let mut mw = memory::ReadWriteMemory::new(addr, BREAKPOINT_SIZE, self.h_proc.0)?;
         self.breakpoints.add(&mut mw)
+    }
+
+    pub fn add_breakpoint(&mut self, addr_or_symbol: &str) -> Result<&mut Breakpoint> {
+        let (addr, symbol) = if let Some(addr) = self.resolv(addr_or_symbol) {
+            (addr, addr_or_symbol.into())
+        } else if let Ok(addr) = usize::from_str_radix(addr_or_symbol, 16) {
+            (addr, self.lookup_addr(addr))
+        } else {
+            return Err(Error::new(
+                ERROR_INVALID_DATA.into(),
+                "Could not resolv symbol",
+            ));
+        };
+        let bp = self.add_breakpoint_by_addr(addr)?;
+        tracing::debug!("Added breakpoint #{id} at {symbol}", id = bp.id());
+        Ok(bp)
     }
 
     pub fn add_breakpoints(&mut self, addrs: impl Iterator<Item = usize>) -> Result<()> {
@@ -584,7 +603,7 @@ impl Debuggee {
         let Some(bp) = self.breakpoints.get(id) else {
             return Ok(());
         };
-        let mut mw = memory::ReadWriteMemory::new(bp.addr, BREAKPOINT_SIZE, self.h_proc.0)?;
+        let mut mw = memory::ReadWriteMemory::new(bp.addr(), BREAKPOINT_SIZE, self.h_proc.0)?;
         self.breakpoints.remove(&mut mw, id)
     }
 

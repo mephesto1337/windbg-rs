@@ -31,7 +31,7 @@ pub enum Command {
 #[derive(Default)]
 struct CreateFile {
     exception_counter: usize,
-    opened_handle: Option<(String, usize)>,
+    opened_handle: Option<String>,
 }
 
 impl fmt::Debug for CreateFile {
@@ -58,18 +58,21 @@ impl Debugger for CreateFile {
             .resolv("CreateFileW")
             .expect("CreateFileA should be present in kernelbase");
 
-        debuggee.add_breakpoint(createfilea)?;
-        debuggee.add_breakpoint(createfilew)?;
+        debuggee
+            .add_breakpoint_by_addr(createfilea)?
+            .set_label("createfilea");
+        debuggee
+            .add_breakpoint_by_addr(createfilew)?
+            .set_label("createfilew");
 
         Ok(ContinueEvent::default())
     }
 
-    fn on_breakpoint(&mut self, debuggee: &mut Debuggee, bp: Breakpoint) -> Result<ContinueEvent> {
-        if let Some((filename, bp_id)) = self.opened_handle.take() {
+    fn on_breakpoint(&mut self, debuggee: &mut Debuggee, bp: &Breakpoint) -> Result<ContinueEvent> {
+        if let Some(filename) = self.opened_handle.take() {
             let regs = debuggee.get_registers()?;
             let handle = regs.ax;
             println!("Opened {filename:?} with 0x{handle:x}");
-            debuggee.remove_breakpoint(bp_id)?;
             return Ok(ContinueEvent::default());
         }
 
@@ -84,8 +87,9 @@ impl Debugger for CreateFile {
         };
         if let Some(filename) = maybe_filename {
             let ra = unsafe { debuggee.get_return_address() }?;
-            let id = debuggee.add_breakpoint(ra)?;
-            self.opened_handle = Some((filename, id));
+            debuggee.add_breakpoint_by_addr(ra)?.set_one_shot();
+            tracing::info!("Added breakpoint on return address of {:?}", bp.label());
+            self.opened_handle = Some(filename);
         }
         Ok(ContinueEvent::default())
     }

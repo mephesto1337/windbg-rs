@@ -1,4 +1,7 @@
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::{
+    borrow::Cow,
+    io::{Read, Seek, SeekFrom, Write},
+};
 
 use windows::core::Result;
 
@@ -7,25 +10,38 @@ use crate::debuggee::ReadWriteMemory;
 pub const BREAKPOINT_SIZE: usize = 1;
 pub const BREAK_OPCODES: [u8; BREAKPOINT_SIZE] = [0xcc];
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Breakpoint {
-    pub(crate) addr: usize,
-    pub(crate) saved_bc: [u8; BREAKPOINT_SIZE],
-    pub(crate) one_shot: bool,
+    id: usize,
+    addr: usize,
+    saved_bc: [u8; BREAKPOINT_SIZE],
+    one_shot: bool,
+    label: Option<Cow<'static, str>>,
 }
 
 impl Breakpoint {
+    pub fn id(&self) -> usize {
+        self.id
+    }
+    pub fn set_label(&mut self, label: impl Into<Cow<'static, str>>) -> &mut Self {
+        self.label = Some(label.into());
+        self
+    }
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_ref().map(|s| s.as_ref())
+    }
     pub fn addr(&self) -> usize {
         self.addr
     }
-    pub fn saved_bc(&self) -> [u8; BREAKPOINT_SIZE] {
-        self.saved_bc
+    pub fn saved_bc(&self) -> &[u8] {
+        &self.saved_bc[..]
     }
     pub fn is_one_shot(&self) -> bool {
         self.one_shot
     }
-    pub fn set_one_shot(&mut self) {
-        self.one_shot = true
+    pub fn set_one_shot(&mut self) -> &mut Self {
+        self.one_shot = true;
+        self
     }
 }
 
@@ -35,8 +51,8 @@ pub struct Breakpoints {
 }
 
 impl Breakpoints {
-    #[tracing::instrument(skip(self), ret)]
-    pub fn add(&mut self, mem: &mut ReadWriteMemory) -> Result<usize> {
+    #[tracing::instrument(skip_all, fields(addr = mem.addr()))]
+    pub fn add(&mut self, mem: &mut ReadWriteMemory) -> Result<&mut Breakpoint> {
         let mut saved_bc = [0u8; BREAKPOINT_SIZE];
 
         let addr = mem.addr();
@@ -44,14 +60,18 @@ impl Breakpoints {
         mem.seek(SeekFrom::Start(0))?;
         mem.write(&BREAK_OPCODES[..])?;
 
-        let (id, bp) = self.alloc_bp();
+        let bp = self.alloc_bp();
         bp.addr = addr;
         bp.saved_bc.copy_from_slice(&saved_bc);
-        tracing::info!("Added breakpoint #{id} at 0x{addr:x}");
-        Ok(id)
+        tracing::debug!(
+            "Added breakpoint #{id} at 0x{addr:x} ({saved_bc:x?} -> {:x?})",
+            &BREAK_OPCODES,
+            id = bp.id()
+        );
+        Ok(bp)
     }
 
-    #[tracing::instrument(skip(self), ret)]
+    #[tracing::instrument(skip(self), fields(addr = mem.addr()), ret)]
     pub fn add_many(&mut self, mem: &mut ReadWriteMemory, addrs: &[usize]) -> Result<()> {
         let mut saved_bc = [0u8; BREAKPOINT_SIZE];
         mem.seek(SeekFrom::Start(0))?;
@@ -64,15 +84,15 @@ impl Breakpoints {
             mem.seek(SeekFrom::Start(offset))?;
             mem.write(&BREAK_OPCODES[..])?;
 
-            let (id, bp) = self.alloc_bp();
+            let bp = self.alloc_bp();
             bp.addr = *addr;
             bp.saved_bc.copy_from_slice(&saved_bc);
-            tracing::info!("Added breakpoint #{id} at 0x{addr:x}");
+            tracing::info!("Added breakpoint #{id} at 0x{addr:x}", id = bp.id());
         }
         Ok(())
     }
 
-    fn alloc_bp(&mut self) -> (usize, &mut Breakpoint) {
+    fn alloc_bp(&mut self) -> &mut Breakpoint {
         let idx = match self
             .bp
             .iter()
@@ -87,16 +107,18 @@ impl Breakpoints {
             }
         };
         let bp = Breakpoint {
+            id: idx,
             one_shot: false,
             addr: 0,
             saved_bc: [0u8; BREAKPOINT_SIZE],
+            label: None,
         };
         let place = unsafe { self.bp.get_unchecked_mut(idx) };
         *place = Some(bp);
-        (idx, unsafe { place.as_mut().unwrap_unchecked() })
+        unsafe { place.as_mut().unwrap_unchecked() }
     }
 
-    #[tracing::instrument(skip(self), ret)]
+    #[tracing::instrument(skip(self, mem), fields(addr = mem.addr()), ret)]
     pub fn remove(&mut self, mem: &mut ReadWriteMemory, id: usize) -> Result<()> {
         let Some(Breakpoint { addr, saved_bc, .. }) = self.bp.get_mut(id).and_then(|x| x.take())
         else {

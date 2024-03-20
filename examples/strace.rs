@@ -72,7 +72,7 @@ impl Strace {
 }
 
 impl Debugger for Strace {
-    fn on_breakpoint(&mut self, debuggee: &mut Debuggee, bp: Breakpoint) -> Result<ContinueEvent> {
+    fn on_breakpoint(&mut self, debuggee: &mut Debuggee, bp: &Breakpoint) -> Result<ContinueEvent> {
         if self.first {
             Self::trace_dll(debuggee, DLL_NAME, |n: &str| n.contains("File"))?;
             self.first = false;
@@ -103,8 +103,7 @@ fn main() -> Result<()> {
     tracing::info!("Debuggee = {debuggee:?}");
     let mut debugger = Strace::default();
 
-    let entry = debuggee.resolv("_entry").unwrap();
-    debuggee.add_breakpoint(entry)?;
+    debuggee.add_breakpoint("_entry")?;
 
     debuggee.run(&mut debugger)?;
 

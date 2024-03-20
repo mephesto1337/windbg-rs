@@ -86,7 +86,7 @@ pub trait Debugger: std::fmt::Debug {
         Ok(ContinueEvent::default())
     }
 
-    fn on_breakpoint(&mut self, debuggee: &mut Debuggee, bp: Breakpoint) -> Result<ContinueEvent> {
+    fn on_breakpoint(&mut self, debuggee: &mut Debuggee, bp: &Breakpoint) -> Result<ContinueEvent> {
         let _ = (debuggee, bp);
         Ok(ContinueEvent::default())
     }
