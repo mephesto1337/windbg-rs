@@ -51,19 +51,8 @@ impl Debugger for CreateFile {
             return Ok(ContinueEvent::default());
         }
 
-        let createfilea = debuggee
-            .resolv("CreateFileA")
-            .expect("CreateFileA should be present in kernelbase");
-        let createfilew = debuggee
-            .resolv("CreateFileW")
-            .expect("CreateFileA should be present in kernelbase");
-
-        debuggee
-            .add_breakpoint_by_addr(createfilea)?
-            .set_label("createfilea");
-        debuggee
-            .add_breakpoint_by_addr(createfilew)?
-            .set_label("createfilew");
+        debuggee.add_breakpoint("CreateFileA")?;
+        debuggee.add_breakpoint("CreateFileW")?;
 
         Ok(ContinueEvent::default())
     }
@@ -87,7 +76,7 @@ impl Debugger for CreateFile {
         };
         if let Some(filename) = maybe_filename {
             let ra = unsafe { debuggee.get_return_address() }?;
-            debuggee.add_breakpoint_by_addr(ra)?.set_one_shot();
+            debuggee.add_breakpoint(ra)?.set_one_shot();
             tracing::info!("Added breakpoint on return address of {:?}", bp.label());
             self.opened_handle = Some(filename);
         }

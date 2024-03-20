@@ -1,7 +1,10 @@
-use core::fmt;
+use std::{
+    collections::HashMap,
+    fmt::{self, Write},
+};
 
 use clap::{Parser, Subcommand};
-use windows::core::Result;
+use windows::{core::Result, Win32::Storage::FileSystem::FILE_SHARE_MODE};
 
 use debugger::{
     breakpoint::Breakpoint, debuggee::LoadDll, debugger::ContinueEvent, Debuggee, Debugger,
@@ -25,7 +28,7 @@ pub enum Command {
     },
 }
 
-// const ARGS_COUNT_MAX: usize = 4;
+const ARGS_COUNT_MAX: usize = 4;
 const DLL_NAME: &str = "kernelbase.dll";
 
 fn match_dll_name(filename: &str) -> bool {
@@ -37,7 +40,10 @@ fn match_dll_name(filename: &str) -> bool {
 }
 
 #[derive(Default)]
-struct Strace;
+struct Strace {
+    args: HashMap<(String, u32), [usize; ARGS_COUNT_MAX]>,
+    args_handler: HashMap<&'static str, Box<dyn Fn(&mut Debuggee, &[usize], usize) -> Result<()>>>,
+}
 
 impl fmt::Debug for Strace {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -46,7 +52,7 @@ impl fmt::Debug for Strace {
 }
 
 impl Strace {
-    fn trace_dll<F>(debuggee: &mut Debuggee, name: &str, filter: F) -> Result<()>
+    fn trace_dll<F>(&mut self, debuggee: &mut Debuggee, name: &str, filter: F) -> Result<()>
     where
         F: Fn(&str) -> bool,
     {
@@ -57,13 +63,15 @@ impl Strace {
         else {
             return Ok(());
         };
-        let addrs = dll
+        let symbols = dll
             .symbols()
-            .filter_map(|(a, n)| filter(n).then_some(a))
+            .filter_map(|(a, n)| filter(n).then_some((a, n.to_owned())))
             .collect::<Vec<_>>();
 
-        tracing::debug!("BP: {addrs:x?}");
-        debuggee.add_breakpoints(addrs.into_iter())?;
+        self.args.reserve(symbols.len());
+        for (addr, sym) in symbols {
+            debuggee.add_breakpoint(addr)?.set_label(sym);
+        }
 
         Ok(())
     }
@@ -77,22 +85,51 @@ impl Debugger for Strace {
         if !match_dll_name(filename) {
             return Ok(ContinueEvent::Continue);
         }
-        Self::trace_dll(debuggee, DLL_NAME, |n: &str| n.contains("File"))?;
+        self.trace_dll(debuggee, DLL_NAME, |n: &str| n.contains("File"))?;
         Ok(ContinueEvent::Continue)
     }
 
     fn on_breakpoint(&mut self, debuggee: &mut Debuggee, bp: &Breakpoint) -> Result<ContinueEvent> {
         let regs = debuggee.get_registers()?;
-        let symbol = debuggee.lookup_addr(bp.addr());
-        let mut stack = regs.open_stack(debuggee)?;
-        let (arg0, arg1, arg2, arg3) = (
-            regs.get_arg(&mut stack, 0)?,
-            regs.get_arg(&mut stack, 1)?,
-            regs.get_arg(&mut stack, 2)?,
-            regs.get_arg(&mut stack, 3)?,
-        );
+        let Some(label) = bp.label() else {
+            tracing::warn!("No label for bp {bp:?}");
+            return Ok(ContinueEvent::Continue);
+        };
+        let key = (label.into(), debuggee.tid());
 
-        println!("{symbol}({arg0:x}, {arg1:x}, {arg2:x}, {arg3:x})");
+        if bp.is_one_shot() {
+            let Some(args) = self.args.remove(&key) else {
+                tracing::warn!("No args for call to {label}");
+                return Ok(ContinueEvent::Continue);
+            };
+            let ret = regs.ax;
+            if let Some(cb) = self.args_handler.get(label) {
+                cb(debuggee, &args[..], ret)?;
+            } else {
+                let mut args_str = String::new();
+                let mut first = "";
+                for a in args {
+                    write!(&mut args_str, "{first}{a:x}").unwrap();
+                    first = ", ";
+                }
+                println!("{label}({args_str}) = {ret:x}");
+            }
+        } else {
+            let mut stack = regs.open_stack(debuggee)?;
+            let mut args = [0; ARGS_COUNT_MAX];
+            for (idx, arg) in args.iter_mut().enumerate() {
+                *arg = regs.get_arg(&mut stack, idx)?;
+            }
+            self.args.insert(key, args);
+
+            let ra = unsafe { debuggee.get_return_address() }?;
+            tracing::debug!("Setting breakpoint on return of {label}: 0x{ra:x}");
+            debuggee
+                .add_breakpoint(&ra)?
+                .set_one_shot()
+                .set_label(label.to_owned());
+        }
+
         Ok(ContinueEvent::default())
     }
 }
@@ -106,6 +143,18 @@ fn main() -> Result<()> {
     };
     tracing::info!("Debuggee = {debuggee:?}");
     let mut debugger = Strace::default();
+
+    let createfile = |debuggee: &mut Debuggee, args: &[usize], ret: usize| -> Result<()> {
+        let filename = debuggee.read_string(args[0], true)?;
+        let desired_access = args[1];
+        let share_mode = FILE_SHARE_MODE(args[2] as u32);
+        println!("CreateFileW({filename:?}, {desired_access:x}, {share_mode:?}, ...) = 0x{ret:x}");
+        Ok(())
+    };
+
+    debugger
+        .args_handler
+        .insert("CreateFileW", Box::new(createfile));
 
     debuggee.run(&mut debugger)?;
 

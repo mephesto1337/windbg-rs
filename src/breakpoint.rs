@@ -55,9 +55,10 @@ impl Breakpoints {
     pub fn add(&mut self, mem: &mut ReadWriteMemory) -> Result<&mut Breakpoint> {
         let mut saved_bc = [0u8; BREAKPOINT_SIZE];
 
+        let offset = mem.stream_position()?;
         let addr = mem.addr();
         mem.read_exact(&mut saved_bc[..])?;
-        mem.seek(SeekFrom::Start(0))?;
+        mem.seek(SeekFrom::Start(offset))?;
         mem.write(&BREAK_OPCODES[..])?;
 
         let bp = self.alloc_bp();
@@ -73,21 +74,14 @@ impl Breakpoints {
 
     #[tracing::instrument(skip(self), fields(addr = mem.addr()), ret)]
     pub fn add_many(&mut self, mem: &mut ReadWriteMemory, addrs: &[usize]) -> Result<()> {
-        let mut saved_bc = [0u8; BREAKPOINT_SIZE];
         mem.seek(SeekFrom::Start(0))?;
         let start_addr = mem.addr() as u64;
 
         for addr in addrs {
             let offset = *addr as u64 - start_addr;
             mem.seek(SeekFrom::Start(offset))?;
-            mem.read_exact(&mut saved_bc[..])?;
-            mem.seek(SeekFrom::Start(offset))?;
-            mem.write(&BREAK_OPCODES[..])?;
-
-            let bp = self.alloc_bp();
-            bp.addr = *addr;
-            bp.saved_bc.copy_from_slice(&saved_bc);
-            tracing::info!("Added breakpoint #{id} at 0x{addr:x}", id = bp.id());
+            assert_eq!(mem.addr(), *addr);
+            self.add(mem)?;
         }
         Ok(())
     }
