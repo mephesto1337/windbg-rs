@@ -26,7 +26,7 @@ pub enum Command {
 }
 
 // const ARGS_COUNT_MAX: usize = 4;
-const DLL_NAME: &str = "ntdll.dll";
+const DLL_NAME: &str = "kernelbase.dll";
 
 fn match_dll_name(filename: &str) -> bool {
     let basename = filename
@@ -37,9 +37,7 @@ fn match_dll_name(filename: &str) -> bool {
 }
 
 #[derive(Default)]
-struct Strace {
-    first: bool,
-}
+struct Strace;
 
 impl fmt::Debug for Strace {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -72,12 +70,18 @@ impl Strace {
 }
 
 impl Debugger for Strace {
-    fn on_breakpoint(&mut self, debuggee: &mut Debuggee, bp: &Breakpoint) -> Result<ContinueEvent> {
-        if self.first {
-            Self::trace_dll(debuggee, DLL_NAME, |n: &str| n.contains("File"))?;
-            self.first = false;
+    fn on_dll_load(&mut self, debuggee: &mut Debuggee, load: LoadDll) -> Result<ContinueEvent> {
+        let Some(filename) = load.filename.as_deref() else {
+            return Ok(ContinueEvent::Continue);
+        };
+        if !match_dll_name(filename) {
+            return Ok(ContinueEvent::Continue);
         }
+        Self::trace_dll(debuggee, DLL_NAME, |n: &str| n.contains("File"))?;
+        Ok(ContinueEvent::Continue)
+    }
 
+    fn on_breakpoint(&mut self, debuggee: &mut Debuggee, bp: &Breakpoint) -> Result<ContinueEvent> {
         let regs = debuggee.get_registers()?;
         let symbol = debuggee.lookup_addr(bp.addr());
         let mut stack = regs.open_stack(debuggee)?;
@@ -102,8 +106,6 @@ fn main() -> Result<()> {
     };
     tracing::info!("Debuggee = {debuggee:?}");
     let mut debugger = Strace::default();
-
-    debuggee.add_breakpoint("_entry")?;
 
     debuggee.run(&mut debugger)?;
 
