@@ -4,11 +4,13 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use windows::{core::Result, Win32::Storage::FileSystem::FILE_SHARE_MODE};
+use windows::core::Result;
 
 use debugger::{
     breakpoint::Breakpoint, debuggee::LoadDll, debugger::ContinueEvent, Debuggee, Debugger,
 };
+
+mod handlers;
 
 #[derive(Debug, Parser)]
 pub struct Args {
@@ -144,17 +146,15 @@ fn main() -> Result<()> {
     tracing::info!("Debuggee = {debuggee:?}");
     let mut debugger = Strace::default();
 
-    let createfile = |debuggee: &mut Debuggee, args: &[usize], ret: usize| -> Result<()> {
-        let filename = debuggee.read_string(args[0], true)?;
-        let desired_access = args[1];
-        let share_mode = FILE_SHARE_MODE(args[2] as u32);
-        println!("CreateFileW({filename:?}, {desired_access:x}, {share_mode:?}, ...) = 0x{ret:x}");
-        Ok(())
-    };
-
     debugger
         .args_handler
-        .insert("CreateFileW", Box::new(createfile));
+        .insert("CreateFileW", Box::new(handlers::createfilew));
+    debugger
+        .args_handler
+        .insert("FindFirstFileW", Box::new(handlers::findfirstfilew));
+    debugger
+        .args_handler
+        .insert("GetModuleFileNameW", Box::new(handlers::getmodulefilenamew));
 
     debuggee.run(&mut debugger)?;
 
