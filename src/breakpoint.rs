@@ -59,7 +59,7 @@ impl Breakpoints {
         let addr = mem.addr();
         mem.read_exact(&mut saved_bc[..])?;
         mem.seek(SeekFrom::Start(offset))?;
-        mem.write(&BREAK_OPCODES[..])?;
+        mem.write_all(&BREAK_OPCODES[..])?;
 
         let bp = self.alloc_bp();
         bp.addr = addr;

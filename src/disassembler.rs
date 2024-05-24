@@ -50,7 +50,7 @@ impl Disassembler {
             .map_err(|_| Error::new(ERROR_INVALID_DATA.into(), "Cannot disassemble buffer"))?;
         let mut s = String::new();
         for i in insts.iter() {
-            write!(&mut s, "{i}\n").unwrap();
+            writeln!(&mut s, "{i}").unwrap();
         }
         Ok(s)
     }
@@ -62,7 +62,7 @@ impl Disassembler {
             .map_err(|_| Error::new(ERROR_INVALID_DATA.into(), "Cannot disassemble buffer"))?;
         let mut s = String::new();
         for i in insts.iter() {
-            write!(&mut s, "{i}\n").unwrap();
+            writeln!(&mut s, "{i}").unwrap();
         }
         Ok(s)
     }

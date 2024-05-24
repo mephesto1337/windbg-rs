@@ -95,7 +95,7 @@ impl Resolvable for usize {
 
 impl Resolvable for &str {
     fn resolv(&self, debuggee: &Debuggee) -> Option<usize> {
-        debuggee.resolv(*self)
+        debuggee.resolv(self)
     }
 }
 

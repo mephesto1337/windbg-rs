@@ -149,45 +149,45 @@ impl Seek for Memory {
                 }
                 self.offset = o as usize;
             }
-            SeekFrom::End(o) => {
-                if o < 0 {
-                    let o: u64 = o.neg().try_into().expect("o should be positive");
-                    self.offset = self.size.checked_sub(o as usize).ok_or(io::Error::new(
+            SeekFrom::End(o) if o < 0 => {
+                let o: u64 = o.neg().try_into().expect("o should be positive");
+                self.offset = self.size.checked_sub(o as usize).ok_or(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Cannot go before start",
+                ))?;
+            }
+            SeekFrom::End(0) => {
+                self.offset = self.size;
+            }
+            SeekFrom::End(_o) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Cannot go past end",
+                ));
+            }
+            SeekFrom::Current(o) if o < 0 => {
+                let o: u64 = o.neg().try_into().expect("o should be positive");
+                self.offset = self
+                    .offset
+                    .checked_sub(o.try_into().unwrap_or(usize::MAX))
+                    .ok_or(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "Cannot go before start",
                     ))?;
-                } else if o == 0 {
-                    self.offset = self.size;
-                } else {
+            }
+            SeekFrom::Current(0) => {
+                // Nothing
+            }
+            SeekFrom::Current(o) => {
+                let o: u64 = o.try_into().expect("o should be positive");
+                self.offset = self
+                    .offset
+                    .saturating_add(o.try_into().unwrap_or(usize::MAX));
+                if self.offset > self.size {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "Cannot go past end",
                     ));
-                }
-            }
-            SeekFrom::Current(o) => {
-                if o < 0 {
-                    let o: u64 = o.neg().try_into().expect("o should be positive");
-                    self.offset = self
-                        .offset
-                        .checked_sub(o.try_into().unwrap_or(usize::MAX))
-                        .ok_or(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "Cannot go before start",
-                        ))?;
-                } else if o == 0 {
-                    // Nothing
-                } else {
-                    let o: u64 = o.try_into().expect("o should be positive");
-                    self.offset = self
-                        .offset
-                        .saturating_add(o.try_into().unwrap_or(usize::MAX));
-                    if self.offset > self.size {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "Cannot go past end",
-                        ));
-                    }
                 }
             }
         }

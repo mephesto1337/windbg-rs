@@ -22,6 +22,7 @@ macro_rules! impl_read_null_terminated_buffer {
                 }
                 let uninit_buf = null_terminated_buf.spare_capacity_mut();
                 let buf: &mut [u8] = unsafe {
+                    #[allow(clippy::size_of_in_element_count)]
                     std::slice::from_raw_parts_mut(
                         uninit_buf.as_mut_ptr().cast(),
                         uninit_buf.len() * size_of::<$type>(),
